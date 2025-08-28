@@ -241,6 +241,78 @@ class FantasyDataAPI:
         
         return df
     
+    def _get_mock_enhanced_data(self) -> pd.DataFrame:
+        """Enhanced mock data with all analytics features"""
+        np.random.seed(42)  # For reproducible results
+        
+        players_data = [
+            # RBs
+            {"player_name": "Christian McCaffrey", "position": "RB", "team": "SF", "age": 27, "sleeper_adp": 1.2, "underdog_adp": 1.1, 
+             "targets_2023": 85, "red_zone_touches": 45, "snap_share": 0.78, "injury_risk": 0.6, "ceiling": 350, "floor": 180,
+             "strength_of_schedule": 0.52, "projected_points": 280, "auction_value": 65, "dynasty_value": 85},
+            {"player_name": "Saquon Barkley", "position": "RB", "team": "PHI", "age": 26, "sleeper_adp": 28.8, "underdog_adp": 29.4,
+             "targets_2023": 65, "red_zone_touches": 38, "snap_share": 0.71, "injury_risk": 0.7, "ceiling": 320, "floor": 160,
+             "strength_of_schedule": 0.48, "projected_points": 250, "auction_value": 45, "dynasty_value": 82},
+            {"player_name": "Derrick Henry", "position": "RB", "team": "BAL", "age": 30, "sleeper_adp": 15.7, "underdog_adp": 16.3,
+             "targets_2023": 25, "red_zone_touches": 42, "snap_share": 0.65, "injury_risk": 0.3, "ceiling": 290, "floor": 170,
+             "strength_of_schedule": 0.55, "projected_points": 240, "auction_value": 52, "dynasty_value": 65},
+            {"player_name": "Austin Ekeler", "position": "RB", "team": "WAS", "age": 29, "sleeper_adp": 34.5, "underdog_adp": 35.1,
+             "targets_2023": 75, "red_zone_touches": 28, "snap_share": 0.68, "injury_risk": 0.5, "ceiling": 270, "floor": 140,
+             "strength_of_schedule": 0.46, "projected_points": 220, "auction_value": 38, "dynasty_value": 70},
+            {"player_name": "Brian Robinson Jr.", "position": "RB", "team": "WAS", "age": 25, "sleeper_adp": 85.2, "underdog_adp": 87.1,
+             "targets_2023": 35, "red_zone_touches": 18, "snap_share": 0.55, "injury_risk": 0.3, "ceiling": 200, "floor": 80,
+             "strength_of_schedule": 0.46, "projected_points": 150, "auction_value": 15, "dynasty_value": 75},
+             
+            # WRs
+            {"player_name": "Cooper Kupp", "position": "WR", "team": "LAR", "age": 31, "sleeper_adp": 12.3, "underdog_adp": 11.8,
+             "targets_2023": 145, "red_zone_touches": 25, "snap_share": 0.82, "injury_risk": 0.6, "ceiling": 310, "floor": 160,
+             "strength_of_schedule": 0.51, "projected_points": 265, "auction_value": 55, "dynasty_value": 72},
+            {"player_name": "Tyreek Hill", "position": "WR", "team": "MIA", "age": 30, "sleeper_adp": 22.1, "underdog_adp": 21.7,
+             "targets_2023": 135, "red_zone_touches": 18, "snap_share": 0.85, "injury_risk": 0.2, "ceiling": 330, "floor": 180,
+             "strength_of_schedule": 0.49, "projected_points": 275, "auction_value": 48, "dynasty_value": 78},
+            {"player_name": "Stefon Diggs", "position": "WR", "team": "HOU", "age": 30, "sleeper_adp": 25.4, "underdog_adp": 24.9,
+             "targets_2023": 140, "red_zone_touches": 22, "snap_share": 0.88, "injury_risk": 0.3, "ceiling": 300, "floor": 170,
+             "strength_of_schedule": 0.53, "projected_points": 260, "auction_value": 46, "dynasty_value": 74},
+            {"player_name": "Rome Odunze", "position": "WR", "team": "CHI", "age": 22, "sleeper_adp": 95.3, "underdog_adp": 98.2,
+             "targets_2023": 0, "red_zone_touches": 0, "snap_share": 0.0, "injury_risk": 0.2, "ceiling": 250, "floor": 60,
+             "strength_of_schedule": 0.47, "projected_points": 140, "auction_value": 12, "dynasty_value": 85},
+             
+            # QBs
+            {"player_name": "Josh Allen", "position": "QB", "team": "BUF", "age": 28, "sleeper_adp": 8.5, "underdog_adp": 9.2,
+             "targets_2023": 0, "red_zone_touches": 35, "snap_share": 1.0, "injury_risk": 0.4, "ceiling": 380, "floor": 220,
+             "strength_of_schedule": 0.50, "projected_points": 320, "auction_value": 58, "dynasty_value": 88},
+            {"player_name": "Lamar Jackson", "position": "QB", "team": "BAL", "age": 27, "sleeper_adp": 31.2, "underdog_adp": 30.8,
+             "targets_2023": 0, "red_zone_touches": 42, "snap_share": 1.0, "injury_risk": 0.5, "ceiling": 370, "floor": 200,
+             "strength_of_schedule": 0.55, "projected_points": 310, "auction_value": 42, "dynasty_value": 90},
+            {"player_name": "C.J. Stroud", "position": "QB", "team": "HOU", "age": 22, "sleeper_adp": 65.8, "underdog_adp": 68.2,
+             "targets_2023": 0, "red_zone_touches": 18, "snap_share": 1.0, "injury_risk": 0.3, "ceiling": 340, "floor": 180,
+             "strength_of_schedule": 0.53, "projected_points": 280, "auction_value": 22, "dynasty_value": 95},
+             
+            # TEs
+            {"player_name": "Travis Kelce", "position": "TE", "team": "KC", "age": 34, "sleeper_adp": 18.9, "underdog_adp": 19.5,
+             "targets_2023": 125, "red_zone_touches": 28, "snap_share": 0.75, "injury_risk": 0.4, "ceiling": 280, "floor": 140,
+             "strength_of_schedule": 0.48, "projected_points": 230, "auction_value": 50, "dynasty_value": 65},
+            {"player_name": "Mark Andrews", "position": "TE", "team": "BAL", "age": 29, "sleeper_adp": 42.1, "underdog_adp": 43.8,
+             "targets_2023": 95, "red_zone_touches": 22, "snap_share": 0.68, "injury_risk": 0.6, "ceiling": 250, "floor": 110,
+             "strength_of_schedule": 0.55, "projected_points": 200, "auction_value": 35, "dynasty_value": 72},
+        ]
+        
+        df = pd.DataFrame(players_data)
+        
+        # Add bye weeks
+        bye_weeks = {
+            "SF": 9, "PHI": 5, "BAL": 14, "WAS": 7, "LAR": 6, 
+            "MIA": 12, "HOU": 10, "CHI": 13, "BUF": 11, "KC": 8
+        }
+        df['bye_week'] = df['team'].map(bye_weeks)
+        
+        # Add handcuff relationships
+        df['handcuff'] = ""
+        df.loc[df['player_name'] == "Christian McCaffrey", 'handcuff'] = "Jordan Mason"
+        df.loc[df['player_name'] == "Derrick Henry", 'handcuff'] = "Justice Hill"
+        
+        return df
+
 class CSVDataManager:
     """Handle CSV imports for expert rankings and custom data"""
     
@@ -456,76 +528,6 @@ class LeagueSyncManager:
         }
         
         return analysis
-        """Enhanced mock data with all analytics features"""
-        np.random.seed(42)  # For reproducible results
-        
-        players_data = [
-            # RBs
-            {"player_name": "Christian McCaffrey", "position": "RB", "team": "SF", "age": 27, "sleeper_adp": 1.2, "underdog_adp": 1.1, 
-             "targets_2023": 85, "red_zone_touches": 45, "snap_share": 0.78, "injury_risk": 0.6, "ceiling": 350, "floor": 180,
-             "strength_of_schedule": 0.52, "projected_points": 280, "auction_value": 65, "dynasty_value": 85},
-            {"player_name": "Saquon Barkley", "position": "RB", "team": "PHI", "age": 26, "sleeper_adp": 28.8, "underdog_adp": 29.4,
-             "targets_2023": 65, "red_zone_touches": 38, "snap_share": 0.71, "injury_risk": 0.7, "ceiling": 320, "floor": 160,
-             "strength_of_schedule": 0.48, "projected_points": 250, "auction_value": 45, "dynasty_value": 82},
-            {"player_name": "Derrick Henry", "position": "RB", "team": "BAL", "age": 30, "sleeper_adp": 15.7, "underdog_adp": 16.3,
-             "targets_2023": 25, "red_zone_touches": 42, "snap_share": 0.65, "injury_risk": 0.3, "ceiling": 290, "floor": 170,
-             "strength_of_schedule": 0.55, "projected_points": 240, "auction_value": 52, "dynasty_value": 65},
-            {"player_name": "Austin Ekeler", "position": "RB", "team": "WAS", "age": 29, "sleeper_adp": 34.5, "underdog_adp": 35.1,
-             "targets_2023": 75, "red_zone_touches": 28, "snap_share": 0.68, "injury_risk": 0.5, "ceiling": 270, "floor": 140,
-             "strength_of_schedule": 0.46, "projected_points": 220, "auction_value": 38, "dynasty_value": 70},
-            {"player_name": "Brian Robinson Jr.", "position": "RB", "team": "WAS", "age": 25, "sleeper_adp": 85.2, "underdog_adp": 87.1,
-             "targets_2023": 35, "red_zone_touches": 18, "snap_share": 0.55, "injury_risk": 0.3, "ceiling": 200, "floor": 80,
-             "strength_of_schedule": 0.46, "projected_points": 150, "auction_value": 15, "dynasty_value": 75},
-             
-            # WRs
-            {"player_name": "Cooper Kupp", "position": "WR", "team": "LAR", "age": 31, "sleeper_adp": 12.3, "underdog_adp": 11.8,
-             "targets_2023": 145, "red_zone_touches": 25, "snap_share": 0.82, "injury_risk": 0.6, "ceiling": 310, "floor": 160,
-             "strength_of_schedule": 0.51, "projected_points": 265, "auction_value": 55, "dynasty_value": 72},
-            {"player_name": "Tyreek Hill", "position": "WR", "team": "MIA", "age": 30, "sleeper_adp": 22.1, "underdog_adp": 21.7,
-             "targets_2023": 135, "red_zone_touches": 18, "snap_share": 0.85, "injury_risk": 0.2, "ceiling": 330, "floor": 180,
-             "strength_of_schedule": 0.49, "projected_points": 275, "auction_value": 48, "dynasty_value": 78},
-            {"player_name": "Stefon Diggs", "position": "WR", "team": "HOU", "age": 30, "sleeper_adp": 25.4, "underdog_adp": 24.9,
-             "targets_2023": 140, "red_zone_touches": 22, "snap_share": 0.88, "injury_risk": 0.3, "ceiling": 300, "floor": 170,
-             "strength_of_schedule": 0.53, "projected_points": 260, "auction_value": 46, "dynasty_value": 74},
-            {"player_name": "Rome Odunze", "position": "WR", "team": "CHI", "age": 22, "sleeper_adp": 95.3, "underdog_adp": 98.2,
-             "targets_2023": 0, "red_zone_touches": 0, "snap_share": 0.0, "injury_risk": 0.2, "ceiling": 250, "floor": 60,
-             "strength_of_schedule": 0.47, "projected_points": 140, "auction_value": 12, "dynasty_value": 85},
-             
-            # QBs
-            {"player_name": "Josh Allen", "position": "QB", "team": "BUF", "age": 28, "sleeper_adp": 8.5, "underdog_adp": 9.2,
-             "targets_2023": 0, "red_zone_touches": 35, "snap_share": 1.0, "injury_risk": 0.4, "ceiling": 380, "floor": 220,
-             "strength_of_schedule": 0.50, "projected_points": 320, "auction_value": 58, "dynasty_value": 88},
-            {"player_name": "Lamar Jackson", "position": "QB", "team": "BAL", "age": 27, "sleeper_adp": 31.2, "underdog_adp": 30.8,
-             "targets_2023": 0, "red_zone_touches": 42, "snap_share": 1.0, "injury_risk": 0.5, "ceiling": 370, "floor": 200,
-             "strength_of_schedule": 0.55, "projected_points": 310, "auction_value": 42, "dynasty_value": 90},
-            {"player_name": "C.J. Stroud", "position": "QB", "team": "HOU", "age": 22, "sleeper_adp": 65.8, "underdog_adp": 68.2,
-             "targets_2023": 0, "red_zone_touches": 18, "snap_share": 1.0, "injury_risk": 0.3, "ceiling": 340, "floor": 180,
-             "strength_of_schedule": 0.53, "projected_points": 280, "auction_value": 22, "dynasty_value": 95},
-             
-            # TEs
-            {"player_name": "Travis Kelce", "position": "TE", "team": "KC", "age": 34, "sleeper_adp": 18.9, "underdog_adp": 19.5,
-             "targets_2023": 125, "red_zone_touches": 28, "snap_share": 0.75, "injury_risk": 0.4, "ceiling": 280, "floor": 140,
-             "strength_of_schedule": 0.48, "projected_points": 230, "auction_value": 50, "dynasty_value": 65},
-            {"player_name": "Mark Andrews", "position": "TE", "team": "BAL", "age": 29, "sleeper_adp": 42.1, "underdog_adp": 43.8,
-             "targets_2023": 95, "red_zone_touches": 22, "snap_share": 0.68, "injury_risk": 0.6, "ceiling": 250, "floor": 110,
-             "strength_of_schedule": 0.55, "projected_points": 200, "auction_value": 35, "dynasty_value": 72},
-        ]
-        
-        df = pd.DataFrame(players_data)
-        
-        # Add bye weeks
-        bye_weeks = {
-            "SF": 9, "PHI": 5, "BAL": 14, "WAS": 7, "LAR": 6, 
-            "MIA": 12, "HOU": 10, "CHI": 13, "BUF": 11, "KC": 8
-        }
-        df['bye_week'] = df['team'].map(bye_weeks)
-        
-        # Add handcuff relationships
-        df['handcuff'] = ""
-        df.loc[df['player_name'] == "Christian McCaffrey", 'handcuff'] = "Jordan Mason"
-        df.loc[df['player_name'] == "Derrick Henry", 'handcuff'] = "Justice Hill"
-        
-        return df
 
 class AdvancedAnalytics:
     """Advanced analytics and predictive modeling"""
@@ -1058,146 +1060,17 @@ def main():
         sync_data = st.session_state.league_sync_data
         st.success(f"🔗 Synced with league: **{sync_data.get('league_name', 'Unknown')}** ({sync_data.get('total_rosters', 0)} teams)")
     
-    with tab8:
-        st.header("League Sync & Management")
-        
-        if 'league_sync_data' in st.session_state:
-            sync_data = st.session_state.league_sync_data
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("League Information")
-                st.write(f"**League Name:** {sync_data.get('league_name', 'N/A')}")
-                st.write(f"**Season:** {sync_data.get('season', 'N/A')}")
-                st.write(f"**Teams:** {sync_data.get('total_rosters', 'N/A')}")
-                st.write(f"**Scoring:** {list(sync_data.get('scoring_settings', {}).keys())[:3]}")  # Show first few scoring rules
-                
-                # League standings if available
-                if sync_data.get('rosters'):
-                    league_sync = LeagueSyncManager(FantasyDataAPI())
-                    standings = league_sync.get_league_standings(sync_data)
-                    if not standings.empty:
-                        st.subheader("League Standings")
-                        st.dataframe(standings)
-            
-            with col2:
-                st.subheader("League Analytics")
-                
-                if sync_data.get('rosters'):
-                    league_sync = LeagueSyncManager(FantasyDataAPI())
-                    league_trends = league_sync.analyze_league_trends(sync_data, df)
-                    
-                    if league_trends:
-                        st.write("**League Trends:**")
-                        st.write(f"• Total Rostered Players: {league_trends.get('total_rostered_players', 'N/A')}")
-                        st.write(f"• Rookie Adoption Rate: {league_trends.get('rookie_adoption_rate', 0):.1%}")
-                        
-                        if league_trends.get('most_rostered_positions'):
-                            st.write("**Position Distribution:**")
-                            for pos, count in league_trends['most_rostered_positions'].items():
-                                st.write(f"• {pos}: {count}")
-                
-                # Draft analysis if available
-                if sync_data.get('drafts'):
-                    st.subheader("Draft Analysis")
-                    for draft in sync_data['drafts']:
-                        if draft['picks']:
-                            st.write(f"**Draft Status:** {draft['status']}")
-                            st.write(f"**Total Picks:** {len(draft['picks'])}")
-                            
-                            # Show recent picks
-                            if len(draft['picks']) > 0:
-                                recent_picks = draft['picks'][-10:]  # Last 10 picks
-                                st.write("**Recent Picks:**")
-                                for pick in recent_picks:
-                                    st.write(f"Round {pick.get('round', '?')}, Pick {pick.get('draft_slot', '?')}: {pick.get('metadata', {}).get('first_name', '')} {pick.get('metadata', {}).get('last_name', '')}")
-        else:
-            st.info("Connect a league above to see sync data")
-            
-            # API Setup Instructions
-            st.subheader("🔗 API Setup Instructions")
-            
-            with st.expander("Sleeper API Setup (Free)", expanded=True):
-                st.markdown("""
-                **Sleeper Integration is Ready!**
-                
-                1. **Find Your League ID:**
-                   - Go to your Sleeper league
-                   - Look at the URL: `sleeper.app/leagues/YOUR_LEAGUE_ID`
-                   - Copy the league ID number
-                
-                2. **Enter League ID:**
-                   - Paste it in the sidebar under "League Sync"
-                   - Click "Sync League"
-                
-                **Features Available:**
-                - Live roster tracking
-                - League standings
-                - Draft pick analysis
-                - Team composition analytics
-                """)
-            
-            with st.expander("FantasyPros ADP Integration"):
-                st.markdown("""
-                **Option 1: FantasyPros API (Recommended)**
-                
-                1. Sign up at: https://www.fantasypros.com/api/
-                2. Subscribe to a plan ($30-50/month)
-                3. Get your API key
-                4. Add to Streamlit secrets:
-                ```
-                # .streamlit/secrets.toml
-                [fantasypros]
-                api_key = "your_api_key_here"
-                ```
-                
-                **Option 2: Manual CSV Upload**
-                - Download ADP data from FantasyPros
-                - Use CSV import feature in sidebar
-                
-                **Option 3: Web Scraping (Advanced)**
-                - Implement with BeautifulSoup/Selenium
-                - May violate terms of service
-                - Not recommended for production use
-                """)
-            
-            with st.expander("Underdog Fantasy Integration"):
-                st.markdown("""
-                **Challenge: No Public API**
-                
-                Underdog Fantasy doesn't provide a public API. Options:
-                
-                1. **Web Scraping (Advanced Users)**
-                   - Use Selenium to scrape ADP data
-                   - Requires technical implementation
-                   - May be against terms of service
-                
-                2. **Manual Data Entry**
-                   - Download/copy ADP data manually
-                   - Upload via CSV import
-                
-                3. **Alternative Sources**
-                   - Use FantasyPros consensus ADP
-                   - Include Underdog in consensus calculations
-                """)
-            
-            with st.expander("Other Data Sources"):
-                st.markdown("""
-                **Free Alternatives:**
-                - **NFL.com**: Has fantasy data but limited API
-                - **Pro Football Reference**: Great for historical stats
-                - **Reddit APIs**: r/fantasyfootball consensus rankings
-                - **GitHub Projects**: Community-maintained datasets
-                
-                **Paid Alternatives:**
-                - **The Athletic**: Premium rankings and analysis
-                - **4for4**: Advanced projections ($)
-                - **Football Outsiders**: Analytics and DVOA data ($)
-                """)
-    
-    # Rest of the existing tabs remain the same...
-    # [Previous tab implementations continue here]
+    # Main navigation with enhanced tabs - FIXED VERSION
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "📊 Advanced Analytics", 
+        "🎯 Predictive Models", 
+        "🚀 Draft Day Tools", 
+        "📈 Portfolio Analysis",
+        "💰 Auction Tools",
+        "🔄 Trade Analyzer",
+        "📋 My Draft Board",
+        "🏆 League Sync"
+    ])
     
     with tab1:
         st.header("Advanced Analytics")
@@ -1598,6 +1471,144 @@ def main():
                 st.session_state.draft_round = 1
                 st.session_state.draft_pick = 1
                 st.rerun()
+
+    with tab8:
+        st.header("League Sync & Management")
+        
+        if 'league_sync_data' in st.session_state:
+            sync_data = st.session_state.league_sync_data
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("League Information")
+                st.write(f"**League Name:** {sync_data.get('league_name', 'N/A')}")
+                st.write(f"**Season:** {sync_data.get('season', 'N/A')}")
+                st.write(f"**Teams:** {sync_data.get('total_rosters', 'N/A')}")
+                st.write(f"**Scoring:** {list(sync_data.get('scoring_settings', {}).keys())[:3]}")  # Show first few scoring rules
+                
+                # League standings if available
+                if sync_data.get('rosters'):
+                    league_sync = LeagueSyncManager(FantasyDataAPI())
+                    standings = league_sync.get_league_standings(sync_data)
+                    if not standings.empty:
+                        st.subheader("League Standings")
+                        st.dataframe(standings)
+            
+            with col2:
+                st.subheader("League Analytics")
+                
+                if sync_data.get('rosters'):
+                    league_sync = LeagueSyncManager(FantasyDataAPI())
+                    league_trends = league_sync.analyze_league_trends(sync_data, df)
+                    
+                    if league_trends:
+                        st.write("**League Trends:**")
+                        st.write(f"• Total Rostered Players: {league_trends.get('total_rostered_players', 'N/A')}")
+                        st.write(f"• Rookie Adoption Rate: {league_trends.get('rookie_adoption_rate', 0):.1%}")
+                        
+                        if league_trends.get('most_rostered_positions'):
+                            st.write("**Position Distribution:**")
+                            for pos, count in league_trends['most_rostered_positions'].items():
+                                st.write(f"• {pos}: {count}")
+                
+                # Draft analysis if available
+                if sync_data.get('drafts'):
+                    st.subheader("Draft Analysis")
+                    for draft in sync_data['drafts']:
+                        if draft['picks']:
+                            st.write(f"**Draft Status:** {draft['status']}")
+                            st.write(f"**Total Picks:** {len(draft['picks'])}")
+                            
+                            # Show recent picks
+                            if len(draft['picks']) > 0:
+                                recent_picks = draft['picks'][-10:]  # Last 10 picks
+                                st.write("**Recent Picks:**")
+                                for pick in recent_picks:
+                                    st.write(f"Round {pick.get('round', '?')}, Pick {pick.get('draft_slot', '?')}: {pick.get('metadata', {}).get('first_name', '')} {pick.get('metadata', {}).get('last_name', '')}")
+        else:
+            st.info("Connect a league above to see sync data")
+            
+            # API Setup Instructions
+            st.subheader("🔗 API Setup Instructions")
+            
+            with st.expander("Sleeper API Setup (Free)", expanded=True):
+                st.markdown("""
+                **Sleeper Integration is Ready!**
+                
+                1. **Find Your League ID:**
+                   - Go to your Sleeper league
+                   - Look at the URL: `sleeper.app/leagues/YOUR_LEAGUE_ID`
+                   - Copy the league ID number
+                
+                2. **Enter League ID:**
+                   - Paste it in the sidebar under "League Sync"
+                   - Click "Sync League"
+                
+                **Features Available:**
+                - Live roster tracking
+                - League standings
+                - Draft pick analysis
+                - Team composition analytics
+                """)
+            
+            with st.expander("FantasyPros ADP Integration"):
+                st.markdown("""
+                **Option 1: FantasyPros API (Recommended)**
+                
+                1. Sign up at: https://www.fantasypros.com/api/
+                2. Subscribe to a plan ($30-50/month)
+                3. Get your API key
+                4. Add to Streamlit secrets:
+                ```
+                # .streamlit/secrets.toml
+                [fantasypros]
+                api_key = "your_api_key_here"
+                ```
+                
+                **Option 2: Manual CSV Upload**
+                - Download ADP data from FantasyPros
+                - Use CSV import feature in sidebar
+                
+                **Option 3: Web Scraping (Advanced)**
+                - Implement with BeautifulSoup/Selenium
+                - May violate terms of service
+                - Not recommended for production use
+                """)
+            
+            with st.expander("Underdog Fantasy Integration"):
+                st.markdown("""
+                **Challenge: No Public API**
+                
+                Underdog Fantasy doesn't provide a public API. Options:
+                
+                1. **Web Scraping (Advanced Users)**
+                   - Use Selenium to scrape ADP data
+                   - Requires technical implementation
+                   - May be against terms of service
+                
+                2. **Manual Data Entry**
+                   - Download/copy ADP data manually
+                   - Upload via CSV import
+                
+                3. **Alternative Sources**
+                   - Use FantasyPros consensus ADP
+                   - Include Underdog in consensus calculations
+                """)
+            
+            with st.expander("Other Data Sources"):
+                st.markdown("""
+                **Free Alternatives:**
+                - **NFL.com**: Has fantasy data but limited API
+                - **Pro Football Reference**: Great for historical stats
+                - **Reddit APIs**: r/fantasyfootball consensus rankings
+                - **GitHub Projects**: Community-maintained datasets
+                
+                **Paid Alternatives:**
+                - **The Athletic**: Premium rankings and analysis
+                - **4for4**: Advanced projections ($)
+                - **Football Outsiders**: Analytics and DVOA data ($)
+                """)
 
 if __name__ == "__main__":
     main()
