@@ -182,6 +182,60 @@ class FantasyDataAPI:
         """Get comprehensive player data"""
         if use_real_apis:
             with st.spinner("Fetching data from Sleeper API..."):
+    if not use_real_apis:
+        return self._get_mock_enhanced_data(custom_rankings)
+
+    import streamlit as st
+    with st.spinner("Fetching data from Sleeper API..."):
+        players_dict = self.get_sleeper_players()
+        base_df = self._players_dict_to_df(players_dict)
+
+        # Determine season if not provided
+        if season is None:
+            try:
+                state = self.session.get(f"{self.sleeper_base_url}/state/nfl").json()
+                season = str(state.get("league_season") or state.get("season"))
+            except Exception:
+                season = str(datetime.now().year)
+
+        # Gather draft IDs
+        draft_ids = []
+        if league_ids:
+            for lg in league_ids:
+                for d in self.get_league_drafts(lg) or []:
+                    if d.get("draft_id"):
+                        draft_ids.append(d.get("draft_id"))
+        elif sleeper_username_or_id:
+            user = self.get_user(sleeper_username_or_id)
+            if user and user.get("user_id"):
+                leagues = self.get_user_leagues(user["user_id"], season) or []
+                for lg in leagues:
+                    for d in self.get_league_drafts(lg.get("league_id")) or []:
+                        if d.get("draft_id"):
+                            draft_ids.append(d.get("draft_id"))
+
+        adp_df = self.compute_adp_from_drafts(draft_ids) if draft_ids else pd.DataFrame(columns=["player_id","adp","adp_rank","drafts_count"])
+        df = base_df.merge(adp_df, on="player_id", how="left")
+
+        # Preserve any mock analytics except ADP fields
+        if hasattr(self, "_add_mock_analytics"):
+            analytics = df.apply(lambda r: self._add_mock_analytics({"player_name": r.get("player_name",""), "position": r.get("position","")}), axis=1, result_type="expand")
+            for col in getattr(analytics, "columns", []):
+                if col not in ["sleeper_adp", "adp_rank", "adp"]:
+                    df[col] = analytics[col]
+
+        if "adp" in df.columns and "sleeper_adp" not in df.columns:
+            df["sleeper_adp"] = df["adp"]
+
+        # Merge custom rankings CSV
+        if custom_rankings is not None and hasattr(self, "_merge_custom_rankings"):
+            df = self._merge_custom_rankings(df, custom_rankings)
+
+        if "custom_rank" in df.columns:
+            df["value_delta"] = (df["sleeper_adp"].rank(method="dense") - df["custom_rank"]).astype("Int64")
+
+        return df
+
                 players_dict = self.get_sleeper_players()
                 if players_dict:
                     return self.process_sleeper_data(players_dict, custom_rankings)
@@ -569,6 +623,148 @@ def main():
         - **Bye week planning**
         - **Waiver wire targets**
         """)
+
+
+    def get_user(self, username_or_id: str):
+        """Get Sleeper user object by username or user_id"""
+        if not self.session: return None
+        try:
+            r = self.session.get(f"{self.sleeper_base_url}/user/{username_or_id}")
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None
+
+    def get_user_leagues(self, user_id: str, season: str, sport: str = "nfl"):
+        if not self.session: return []
+        try:
+            r = self.session.get(f"{self.sleeper_base_url}/user/{user_id}/leagues/{sport}/{season}")
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
+    def get_league_drafts(self, league_id: str):
+        if not self.session: return []
+        try:
+            r = self.session.get(f"{self.sleeper_base_url}/league/{league_id}/drafts")
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
+    def get_draft_picks(self, draft_id: str):
+        if not self.session: return []
+        try:
+            r = self.session.get(f"{self.sleeper_base_url}/draft/{draft_id}/picks")
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
+    def compute_adp_from_drafts(self, draft_ids):
+        """Aggregate picks across drafts to compute ADP & draft count"""
+        if not draft_ids: 
+            return pd.DataFrame(columns=["player_id","adp","drafts_count","adp_rank"])
+        all_rows = []
+        for did in draft_ids:
+            picks = self.get_draft_picks(did) or []
+            for p in picks:
+                pid = p.get("player_id") or (p.get("metadata") or {}).get("player_id")
+                pick_no = p.get("pick_no") or p.get("overall") or p.get("pick")  # try common fields
+                if pid and pick_no is not None:
+                    all_rows.append({"player_id": str(pid), "pick_no": float(pick_no)})
+        if not all_rows:
+            return pd.DataFrame(columns=["player_id","adp","drafts_count","adp_rank"])
+        adp_df = pd.DataFrame(all_rows).groupby("player_id").agg(
+            adp=("pick_no","mean"),
+            drafts_count=("pick_no","count")
+        ).reset_index()
+        adp_df["adp_rank"] = adp_df["adp"].rank(method="dense").astype(int)
+        return adp_df
+
+    def _players_dict_to_df(self, players_dict):
+        rows = []
+        for pid, info in (players_dict or {}).items():
+            pos = info.get("position")
+            if pos in ['QB','RB','WR','TE','K','DEF'] and info.get("team"):
+                rows.append({
+                    "player_id": str(pid),
+                    "player_name": f"{info.get('first_name','')} {info.get('last_name','')}".strip(),
+                    "position": pos,
+                    "team": info.get("team"),
+                    "age": info.get("age"),
+                    "years_exp": info.get("years_exp", 0),
+                    "height": info.get("height"),
+                    "weight": info.get("weight"),
+                    "college": info.get("college"),
+                    "injury_status": info.get("injury_status"),
+                    "status": info.get("status","Active"),
+                })
+        return pd.DataFrame(rows)
+
+
+# --- Sleeper Source UI ---
+st.sidebar.markdown("---")
+st.sidebar.header("🧩 Sleeper Source")
+sleeper_username = st.sidebar.text_input("Your Sleeper username (or user_id)", value="", help="Used to pull your leagues & drafts to compute ADP")
+season_input = st.sidebar.text_input("Season (blank = auto)", value="")
+league_ids_raw = st.sidebar.text_area("Specific League IDs (optional)", help="One per line. If provided, ADP is computed from these leagues only.")
+league_ids = [x.strip() for x in league_ids_raw.splitlines() if x.strip()]
+if st.sidebar.button("🔄 Load/Refresh Data", type="primary"):
+    with st.spinner("Loading player data..."):
+        try:
+            st.session_state.enhanced_data = api.get_enhanced_player_data(
+                use_real_apis=True,
+                custom_rankings=custom_rankings if 'custom_rankings' in globals() or 'custom_rankings' in locals() else None,
+                sleeper_username_or_id=sleeper_username or None,
+                season=season_input or None,
+                league_ids=league_ids or None
+            )
+            st.success("Data loaded successfully!")
+        except Exception as e:
+            st.error(f"Failed to load Sleeper data: {e}")
+
+
+
+# --- Value vs ADP Tab ---
+try:
+    df = st.session_state.enhanced_data
+except Exception:
+    df = None
+
+if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+    try:
+        tabs = re.findall(r"st\.tabs\(\[(.*?)\]\)", content, flags=re.DOTALL)
+    except Exception:
+        tabs = None
+
+# Safely add a standalone section if tabs aren't easily editable
+st.markdown("## 🧮 Value vs ADP (Experts vs Your Sleeper Room)")
+if df is None or df.empty:
+    st.info("Upload expert rankings and click Refresh to compute ADP from your leagues.")
+else:
+    if "custom_rank" not in df.columns:
+        st.info("Upload a CSV of expert rankings in the sidebar. Include 'player_name' and 'rank'.")
+    else:
+        vdf = df.copy()
+        if "adp_rank" not in vdf.columns:
+            vdf["adp_rank"] = vdf["sleeper_adp"].rank(method="dense")
+        vdf["value_delta"] = (vdf["adp_rank"] - vdf["custom_rank"]).astype("Int64")
+        vdf["value_tag"] = np.where(vdf["value_delta"] >= 2, "✅ Value",
+                              np.where(vdf["value_delta"] <= -2, "⚠️ Overpriced", "—"))
+        cols = [c for c in ["player_name","position","team","custom_rank","adp_rank","sleeper_adp","drafts_count","projected_points","value_delta","value_tag"] if c in vdf.columns]
+        st.subheader("Top Value Targets (Experts higher than market)")
+        st.dataframe(vdf.sort_values(["value_delta","custom_rank"], ascending=[False, True])[cols].head(40), use_container_width=True, height=520)
+
+        st.subheader("Risk Check")
+        if "drafts_count" in vdf.columns and vdf["drafts_count"].notna().any():
+            max_dc = int(max(1, float(vdf["drafts_count"].max())))
+            min_drafts = st.slider("Min drafts in sample", 1, max_dc, 1)
+            mask = (vdf["drafts_count"] >= min_drafts)
+            st.dataframe(vdf[mask].sort_values(["value_delta","custom_rank"], ascending=[False, True])[cols].head(40), use_container_width=True)
+        else:
+            st.caption("No drafts_count available yet.")
 
 if __name__ == "__main__":
     main()
