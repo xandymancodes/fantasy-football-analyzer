@@ -186,11 +186,13 @@ class FantasyDataAPI:
         season: Optional[str] = None,
         league_ids: Optional[List[str]] = None
     ) -> pd.DataFrame:
+        """Get comprehensive player data, computing real Sleeper ADP when possible."""
         if not use_real_apis:
             return self._get_mock_enhanced_data(custom_rankings)
 
         import streamlit as st
         with st.spinner("Fetching data from Sleeper API..."):
+            # Base player info
             players_dict = self.get_sleeper_players()
             base_df = self._players_dict_to_df(players_dict)
 
@@ -219,47 +221,32 @@ class FantasyDataAPI:
                                 draft_ids.append(d.get("draft_id"))
 
             adp_df = self.compute_adp_from_drafts(draft_ids) if draft_ids else pd.DataFrame(
-                columns=["player_id", "adp", "adp_rank", "drafts_count"]
+                columns=["player_id","adp","adp_rank","drafts_count"]
             )
             df = base_df.merge(adp_df, on="player_id", how="left")
 
-            # Preserve analytics (except ADP fields)
-            if hasattr(self, "_add_mock_analytics"):
+            # Preserve other analytics (except ADP fields)
+            if hasattr(self, "_add_mock_analytics") and callable(getattr(self, "_add_mock_analytics")):
                 analytics = df.apply(
-                    lambda r: self._add_mock_analytics(
-                        {"player_name": r.get("player_name", ""), "position": r.get("position", "")}
-                    ),
-                    axis=1,
-                    result_type="expand"
+                    lambda r: self._add_mock_analytics({"player_name": r.get("player_name",""), "position": r.get("position","")}),
+                    axis=1, result_type="expand"
                 )
                 for col in getattr(analytics, "columns", []):
-                    if col not in ["sleeper_adp", "adp_rank", "adp"]:
+                    if col not in ["sleeper_adp","adp_rank","adp"]:
                         df[col] = analytics[col]
 
             if "adp" in df.columns and "sleeper_adp" not in df.columns:
                 df["sleeper_adp"] = df["adp"]
 
-            # Merge expert rankings
-            if custom_rankings is not None and hasattr(self, "_merge_custom_rankings"):
+            # Merge custom rankings CSV
+            if custom_rankings is not None and hasattr(self, "_merge_custom_rankings") and callable(getattr(self, "_merge_custom_rankings")):
                 df = self._merge_custom_rankings(df, custom_rankings)
 
             # Value delta
             if "custom_rank" in df.columns:
-                df["value_delta"] = (
-                    df["sleeper_adp"].rank(method="dense") - df["custom_rank"]
-                ).astype("Int64")
+                df["value_delta"] = (df["sleeper_adp"].rank(method="dense") - df["custom_rank"]).astype("Int64")
 
             return df
-
-                players_dict = self.get_sleeper_players()
-                if players_dict:
-                    return self.process_sleeper_data(players_dict, custom_rankings)
-                else:
-                    st.warning("Failed to fetch real data, using mock data instead")
-                    return self._get_mock_enhanced_data(custom_rankings)
-        else:
-            return self._get_mock_enhanced_data(custom_rankings)
-    
     def _get_mock_enhanced_data(self, custom_rankings: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         """Enhanced mock data with all analytics features"""
         np.random.seed(42)
