@@ -178,63 +178,78 @@ class FantasyDataAPI:
             st.error(f"Error merging custom rankings: {str(e)}")
             return df
     
-    def get_enhanced_player_data(self, use_real_apis: bool = True, custom_rankings: Optional[pd.DataFrame] = None) -> pd.DataFrame:
-        """Get comprehensive player data"""
-        if use_real_apis:
-            with st.spinner("Fetching data from Sleeper API..."):
-    if not use_real_apis:
-        return self._get_mock_enhanced_data(custom_rankings)
+    def get_enhanced_player_data(
+        self,
+        use_real_apis: bool = True,
+        custom_rankings: Optional[pd.DataFrame] = None,
+        sleeper_username_or_id: Optional[str] = None,
+        season: Optional[str] = None,
+        league_ids: Optional[List[str]] = None
+    ) -> pd.DataFrame:
+        if not use_real_apis:
+            return self._get_mock_enhanced_data(custom_rankings)
 
-    import streamlit as st
-    with st.spinner("Fetching data from Sleeper API..."):
-        players_dict = self.get_sleeper_players()
-        base_df = self._players_dict_to_df(players_dict)
+        import streamlit as st
+        with st.spinner("Fetching data from Sleeper API..."):
+            players_dict = self.get_sleeper_players()
+            base_df = self._players_dict_to_df(players_dict)
 
-        # Determine season if not provided
-        if season is None:
-            try:
-                state = self.session.get(f"{self.sleeper_base_url}/state/nfl").json()
-                season = str(state.get("league_season") or state.get("season"))
-            except Exception:
-                season = str(datetime.now().year)
+            # Determine season if not provided
+            if season is None:
+                try:
+                    state = self.session.get(f"{self.sleeper_base_url}/state/nfl").json()
+                    season = str(state.get("league_season") or state.get("season"))
+                except Exception:
+                    season = str(datetime.now().year)
 
-        # Gather draft IDs
-        draft_ids = []
-        if league_ids:
-            for lg in league_ids:
-                for d in self.get_league_drafts(lg) or []:
-                    if d.get("draft_id"):
-                        draft_ids.append(d.get("draft_id"))
-        elif sleeper_username_or_id:
-            user = self.get_user(sleeper_username_or_id)
-            if user and user.get("user_id"):
-                leagues = self.get_user_leagues(user["user_id"], season) or []
-                for lg in leagues:
-                    for d in self.get_league_drafts(lg.get("league_id")) or []:
+            # Gather draft IDs
+            draft_ids = []
+            if league_ids:
+                for lg in league_ids:
+                    for d in self.get_league_drafts(lg) or []:
                         if d.get("draft_id"):
                             draft_ids.append(d.get("draft_id"))
+            elif sleeper_username_or_id:
+                user = self.get_user(sleeper_username_or_id)
+                if user and user.get("user_id"):
+                    leagues = self.get_user_leagues(user["user_id"], season) or []
+                    for lg in leagues:
+                        for d in self.get_league_drafts(lg.get("league_id")) or []:
+                            if d.get("draft_id"):
+                                draft_ids.append(d.get("draft_id"))
 
-        adp_df = self.compute_adp_from_drafts(draft_ids) if draft_ids else pd.DataFrame(columns=["player_id","adp","adp_rank","drafts_count"])
-        df = base_df.merge(adp_df, on="player_id", how="left")
+            adp_df = self.compute_adp_from_drafts(draft_ids) if draft_ids else pd.DataFrame(
+                columns=["player_id", "adp", "adp_rank", "drafts_count"]
+            )
+            df = base_df.merge(adp_df, on="player_id", how="left")
 
-        # Preserve any mock analytics except ADP fields
-        if hasattr(self, "_add_mock_analytics"):
-            analytics = df.apply(lambda r: self._add_mock_analytics({"player_name": r.get("player_name",""), "position": r.get("position","")}), axis=1, result_type="expand")
-            for col in getattr(analytics, "columns", []):
-                if col not in ["sleeper_adp", "adp_rank", "adp"]:
-                    df[col] = analytics[col]
+            # Preserve analytics (except ADP fields)
+            if hasattr(self, "_add_mock_analytics"):
+                analytics = df.apply(
+                    lambda r: self._add_mock_analytics(
+                        {"player_name": r.get("player_name", ""), "position": r.get("position", "")}
+                    ),
+                    axis=1,
+                    result_type="expand"
+                )
+                for col in getattr(analytics, "columns", []):
+                    if col not in ["sleeper_adp", "adp_rank", "adp"]:
+                        df[col] = analytics[col]
 
-        if "adp" in df.columns and "sleeper_adp" not in df.columns:
-            df["sleeper_adp"] = df["adp"]
+            if "adp" in df.columns and "sleeper_adp" not in df.columns:
+                df["sleeper_adp"] = df["adp"]
 
-        # Merge custom rankings CSV
-        if custom_rankings is not None and hasattr(self, "_merge_custom_rankings"):
-            df = self._merge_custom_rankings(df, custom_rankings)
+            # Merge expert rankings
+            if custom_rankings is not None and hasattr(self, "_merge_custom_rankings"):
+                df = self._merge_custom_rankings(df, custom_rankings)
 
-        if "custom_rank" in df.columns:
-            df["value_delta"] = (df["sleeper_adp"].rank(method="dense") - df["custom_rank"]).astype("Int64")
+            # Value delta
+            if "custom_rank" in df.columns:
+                df["value_delta"] = (
+                    df["sleeper_adp"].rank(method="dense") - df["custom_rank"]
+                ).astype("Int64")
 
-        return df
+            return df
 
                 players_dict = self.get_sleeper_players()
                 if players_dict:
