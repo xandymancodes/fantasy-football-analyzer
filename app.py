@@ -1,379 +1,430 @@
 # streamlit run app.py
 from __future__ import annotations
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import re
 
 import pandas as pd
-import requests
+import numpy as np
 import streamlit as st
 
-# =====================================================
-# Streamlit setup
-# =====================================================
-st.set_page_config(page_title="Fantasy Football Analyzer", page_icon="🏈", layout="wide")
-st.title("🏈 Fantasy Football Analyzer — Sleeper ADP + Expert Ranks")
+# ===============================
+# Page config
+# ===============================
+st.set_page_config(page_title="Draft Guide (CSV Only)", page_icon="🏈", layout="wide")
+st.title("🏈 Draft Guide — CSV-Only (Sleeper ADP + Expert Ranks)")
 
-# =====================================================
-# Helpers
-# =====================================================
-def _norm_name(name: str) -> str:
+# ===============================
+# Utilities
+# ===============================
+def norm_name(name: str) -> str:
     if not isinstance(name, str):
         return ""
     s = name.strip()
-    # If "Last, First" -> "First Last"
+    # "Last, First" -> "First Last"
     if "," in s:
         parts = [p.strip() for p in s.split(",", 1)]
         if len(parts) == 2:
             s = f"{parts[1]} {parts[0]}"
     s = s.replace(".", " ")
-    s = " ".join(s.split())
-    return s.lower()
+    s = re.sub(r"\s+", " ", s)
+    return s.lower().strip()
 
-def _first(*vals):
+def coalesce(*vals):
     for v in vals:
-        if v is not None and v != "":
+        if v is not None and v != "" and not (isinstance(v, float) and np.isnan(v)):
             return v
     return None
 
-# =====================================================
-# Sleeper Client (resilient + cached)
-# =====================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def _get_json(url: str, params: Optional[dict] = None) -> Optional[dict | list]:
+def find_col(cols: List[str], candidates: List[str]) -> Optional[str]:
+    lower = {c.lower(): c for c in cols}
+    for cand in candidates:
+        if cand.lower() in lower:
+            return lower[cand.lower()]
+    # contains fallback
+    for c in cols:
+        for cand in candidates:
+            if cand.lower() in c.lower():
+                return c
+    return None
+
+def infer_dataset_key(filename: str) -> str:
+    f = filename.lower()
+    key = []
+    if "dynasty" in f:
+        key.append("dynasty")
+    if "2qb" in f or "superflex" in f or "sf" in f:
+        key.append("2qb")
+    if "half" in f or "half_ppr" in f:
+        key.append("half_ppr")
+    elif "ppr" in f:
+        key.append("ppr")
+    elif "std" in f or "standard" in f:
+        key.append("std")
+    if "all" in f and "league" in f:
+        key.append("all_leagues")
+    if "complete" in f:
+        key.append("complete")
+    if not key:
+        key.append("unknown")
+    return "-".join(key)
+
+# ===============================
+# CSV Loaders (ADP and Experts)
+# ===============================
+def parse_adp_csv(file, filename: str) -> pd.DataFrame:
+    """Return normalized ADP table: player_name, position, team, adp, adp_rank, source"""
     try:
-        r = requests.get(url, params=params or {}, timeout=25)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-class Sleeper:
-    def __init__(self, season: int, scoring_type: str) -> None:
-        self.season = season
-        self.scoring_type = scoring_type
-
-    # ---------- Players ----------
-    @st.cache_data(ttl=60*60, show_spinner=False)
-    def players(_self) -> Dict[str, dict]:
-        # Try new domain first, then legacy
-        data = _get_json("https://api.sleeper.com/players/nfl")
-        if not data:
-            data = _get_json("https://api.sleeper.app/v1/players/nfl")
-        return data or {}
-
-    # ---------- Aggregated ADP ----------
-    @st.cache_data(ttl=60*60, show_spinner=False)
-    def adp_aggregate(_self) -> pd.DataFrame:
-        # Try newer aggregate endpoint
-        for base in ["https://api.sleeper.com", "https://api.sleeper.app/v1"]:
-            data = _get_json(
-                f"{base}/adp/nfl/{_self.season}",
-                params={"season_type": "regular", "type": _self.scoring_type},
-            )
-            if isinstance(data, list) and data:
-                df = pd.DataFrame(data)
-                # Normalize common fields
-                rename = {}
-                for c in df.columns:
-                    lc = c.lower()
-                    if lc == "player":
-                        rename[c] = "player_id"
-                    if lc in ("averagedraftposition", "adp_overall"):
-                        rename[c] = "adp"
-                if rename:
-                    df = df.rename(columns=rename)
-                # Keep relevant columns when present
-                keep = [c for c in ["player_id", "name", "adp", "rank", "position", "team", "count"] if c in df.columns]
-                return df[keep].copy()
-        # Legacy fallback (rare)
-        legacy = _get_json("https://api.sleeper.app/v1/players/nfl/adp")
-        if isinstance(legacy, dict) and legacy:
-            rows = []
-            for pid, row in legacy.items():
-                if isinstance(row, dict):
-                    rows.append({"player_id": pid, **row})
-            if rows:
-                df = pd.DataFrame(rows)
-                keep = [c for c in ["player_id", "adp", "rank"] if c in df.columns]
-                return df[keep].copy()
-        # Empty
-        return pd.DataFrame(columns=["player_id", "adp", "rank"])
-
-    # ---------- User/Leagues/Drafts for personal ADP ----------
-    @st.cache_data(ttl=6*60, show_spinner=False)
-    def user_id(_self, username_or_id: str) -> Optional[str]:
-        if not username_or_id:
-            return None
-        for base in ["https://api.sleeper.com", "https://api.sleeper.app/v1"]:
-            data = _get_json(f"{base}/user/{username_or_id}")
-            if isinstance(data, dict) and data.get("user_id"):
-                return data["user_id"]
-        return None
-
-    @st.cache_data(ttl=6*60, show_spinner=False)
-    def leagues(_self, user_id: str) -> List[dict]:
-        leagues = []
-        for base in ["https://api.sleeper.com", "https://api.sleeper.app/v1"]:
-            data = _get_json(f"{base}/user/{user_id}/leagues/nfl/{_self.season}")
-            if isinstance(data, list) and data:
-                leagues = data
-                break
-        return leagues or []
-
-    @st.cache_data(ttl=6*60, show_spinner=False)
-    def league_drafts(_self, league_id: str) -> List[dict]:
-        for base in ["https://api.sleeper.com", "https://api.sleeper.app/v1"]:
-            data = _get_json(f"{base}/league/{league_id}/drafts")
-            if isinstance(data, list):
-                return data
-        return []
-
-    @st.cache_data(ttl=6*60, show_spinner=False)
-    def draft_picks(_self, draft_id: str) -> List[dict]:
-        for base in ["https://api.sleeper.com", "https://api.sleeper.app/v1"]:
-            data = _get_json(f"{base}/draft/{draft_id}/picks")
-            if isinstance(data, list):
-                return data
-        return []
-
-    @st.cache_data(ttl=10*60, show_spinner=False)
-    def adp_from_my_drafts(_self, username_or_id: Optional[str], league_ids: Optional[List[str]]) -> Tuple[pd.DataFrame, dict]:
-        diag = {"draft_ids": 0, "picks": 0, "leagues": 0}
-        draft_ids: List[str] = []
-
-        if league_ids:
-            for lg in league_ids:
-                for d in _self.league_drafts(lg) or []:
-                    if d.get("draft_id"):
-                        draft_ids.append(d["draft_id"])
-        elif username_or_id:
-            uid = _self.user_id(username_or_id)
-            if uid:
-                leagues = _self.leagues(uid) or []
-                diag["leagues"] = len(leagues)
-                for lg in leagues:
-                    for d in _self.league_drafts(lg.get("league_id")) or []:
-                        if d.get("draft_id"):
-                            draft_ids.append(d["draft_id"])
-
-        diag["draft_ids"] = len(draft_ids)
-
-        rows = []
-        for did in draft_ids:
-            picks = _self.draft_picks(did) or []
-            diag["picks"] += len(picks)
-            for p in picks:
-                pid = p.get("player_id") or (p.get("metadata") or {}).get("player_id")
-                pick_no = p.get("pick_no") or p.get("overall") or p.get("pick")
-                if pid and pick_no is not None:
-                    try:
-                        rows.append({"player_id": str(pid), "pick_no": float(pick_no)})
-                    except Exception:
-                        pass
-
-        if not rows:
-            return pd.DataFrame(columns=["player_id", "adp", "rank"]), diag
-
-        df = pd.DataFrame(rows).groupby("player_id").agg(adp=("pick_no", "mean"), count=("pick_no", "count")).reset_index()
-        df["rank"] = df["adp"].rank(method="dense")
-        return df[["player_id", "adp", "rank", "count"]], diag
-
-# =====================================================
-# CSV Handling (robust)
-# =====================================================
-def load_csv() -> Optional[pd.DataFrame]:
-    st.sidebar.subheader("📊 Expert Rankings (CSV)")
-    up = st.sidebar.file_uploader("Upload CSV (include Name and Rank/ECR/Overall)", type=["csv"], key="csv_upload")
-    if up is None:
-        return None
-    try:
-        up.seek(0)
+        file.seek(0)
         try:
-            df = pd.read_csv(up)
+            df = pd.read_csv(file)
         except Exception:
-            up.seek(0)
-            df = pd.read_csv(up, engine="python", sep=None, on_bad_lines="skip")
-        if df.empty:
-            st.sidebar.error("CSV appears empty.")
-            return None
-        # Normalize headers
-        df.columns = df.columns.str.lower().str.strip().str.replace(r"\s+", "_", regex=True)
-        # Coerce common rank columns
-        for c in ["rank", "overall", "overall_rank", "ecr"]:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-        with st.sidebar.expander("Preview CSV"):
-            st.dataframe(df.head(20))
-        return df
+            file.seek(0)
+            df = pd.read_csv(file, engine="python", sep=None, on_bad_lines="skip")
     except Exception as e:
-        st.sidebar.error(f"Error reading CSV: {e}")
-        return None
+        st.error(f"Failed to read ADP CSV {filename}: {e}")
+        return pd.DataFrame(columns=["player_name","position","team","adp","adp_rank","source"])
 
-# =====================================================
-# Build tables
-# =====================================================
-def build_players_table(players: Dict[str, dict], include_positions: Optional[List[str]]) -> pd.DataFrame:
-    rows = []
-    for pid, p in (players or {}).items():
-        pos = _first(p.get("position"), (p.get("fantasy_positions") or [None])[0])
-        if include_positions and pos and pos not in include_positions:
-            continue
-        rows.append({
-            "player_id": str(pid),
-            "player_name": _first(p.get("full_name"), f"{p.get('first_name','')} {p.get('last_name','')}".strip()),
-            "position": pos,
-            "team": p.get("team"),
-        })
-    base = pd.DataFrame(rows)
-    return base
+    if df.empty:
+        return pd.DataFrame(columns=["player_name","position","team","adp","adp_rank","source"])
 
-def attach_adp(base: pd.DataFrame, adp_df: pd.DataFrame, fallback_name_match: bool = True) -> pd.DataFrame:
-    df = base.copy()
-    slim = adp_df.copy()
-    # Try ID join first
-    if "player_id" in slim.columns and "player_id" in df.columns:
-        slim = slim[[c for c in slim.columns if c in {"player_id", "adp", "rank", "count"}]]
-        df = df.merge(slim, on="player_id", how="left")
-    # Fallback name join
-    if fallback_name_match and df["adp"].isna().all():
-        df["__n"] = df["player_name"].map(_norm_name)
-        if "name" in adp_df.columns:
-            slim = adp_df[["name", "adp", "rank"]].copy()
-            slim["__n"] = slim["name"].map(_norm_name)
-            df = df.drop(columns=["adp","rank"], errors="ignore").merge(slim[["__n","adp","rank"]], on="__n", how="left")
-    # Derive rank if missing
-    if "rank" not in df.columns or df["rank"].isna().all():
-        if "adp" in df.columns:
-            df["rank"] = df["adp"].rank(method="dense")
-    return df
+    # Normalize headers
+    df.columns = df.columns.str.strip().str.lower().str.replace(r"\s+","_", regex=True)
 
-def attach_expert(base: pd.DataFrame, csv_df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    if csv_df is None or csv_df.empty:
-        return base
-    df = base.copy()
-    e = csv_df.copy()
-    # Headers
-    name_col = next((c for c in ["player_name","name","player","full_name"] if c in e.columns), None)
-    rank_col = next((c for c in ["ecr","rank","overall","overall_rank","consensus_rank"] if c in e.columns), None)
-    if not name_col or not rank_col:
-        st.warning("CSV must include a player name column and a rank column (e.g., Name + Rank/ECR).")
-        return df
-    e = e.rename(columns={name_col:"csv_name", rank_col:"ecr"})
-    df["__n"] = df["player_name"].map(_norm_name)
-    e["__n"] = e["csv_name"].map(_norm_name)
-    df = df.merge(e[["__n","ecr"]], on="__n", how="left")
-    return df
+    name_col = find_col(df.columns.tolist(), ["player_name","name","player","full_name"])
+    pos_col  = find_col(df.columns.tolist(), ["position","pos"])
+    team_col = find_col(df.columns.tolist(), ["team","nfl_team"])
+    adp_col  = find_col(df.columns.tolist(), ["adp","average_draft_position","adp_overall"])
+    rank_col = find_col(df.columns.tolist(), ["rank","adp_rank","overall_rank"])
+    count_col = find_col(df.columns.tolist(), ["count","samples"])
 
-def build_value_board(players: Dict[str, dict],
-                      adp_df: pd.DataFrame,
-                      csv_df: Optional[pd.DataFrame],
-                      include_positions: Optional[List[str]]) -> pd.DataFrame:
-    base = build_players_table(players, include_positions)
-    if base.empty:
-        return pd.DataFrame()
-    df = attach_adp(base, adp_df, fallback_name_match=True)
-    df = attach_expert(df, csv_df)
-    # Compute value difference: positive means value (going later than expert rank)
-    df["ecr"] = pd.to_numeric(df.get("ecr", pd.Series(index=df.index)), errors="coerce")
-    df["adp"] = pd.to_numeric(df.get("adp", pd.Series(index=df.index)), errors="coerce")
-    df["value_diff"] = df["adp"] - df["ecr"]
-    # Order columns
-    cols = ["player_name","position","team","adp","rank","ecr","value_diff"]
-    cols = [c for c in cols if c in df.columns]
-    out = df[cols]
-    # Sort best values on top
-    out = out.sort_values(["value_diff"], ascending=[False], na_position="last")
+    if not name_col:
+        # Some Sleeper CSVs store "player_id" and "name" separately; try to reconstruct name
+        name_col = "name" if "name" in df.columns else None
+
+    # Build normalized frame
+    out = pd.DataFrame()
+    if name_col:
+        out["player_name"] = df[name_col].astype(str)
+    else:
+        # Can't proceed without names
+        st.warning(f"{filename}: could not find a name column; skipping.")
+        return pd.DataFrame(columns=["player_name","position","team","adp","adp_rank","source"])
+
+    if pos_col in df.columns:
+        out["position"] = df[pos_col]
+    else:
+        out["position"] = None
+
+    if team_col in df.columns:
+        out["team"] = df[team_col]
+    else:
+        out["team"] = None
+
+    if adp_col in df.columns:
+        out["adp"] = pd.to_numeric(df[adp_col], errors="coerce")
+    else:
+        out["adp"] = np.nan
+
+    if rank_col in df.columns:
+        out["adp_rank"] = pd.to_numeric(df[rank_col], errors="coerce")
+    else:
+        # derive rank from adp
+        out["adp_rank"] = out["adp"].rank(method="dense")
+
+    if count_col in df.columns:
+        out["samples"] = pd.to_numeric(df[count_col], errors="coerce")
+    # Add source key from filename
+    out["source"] = infer_dataset_key(filename)
+    # Normalize names and positions
+    out["name_key"] = out["player_name"].map(norm_name)
+    if "position" in out.columns:
+        out["position"] = out["position"].astype(str).str.upper()
+    # Drop duplicate name/position combos; keep best (lowest adp)
+    out = out.sort_values(["name_key","adp"], na_position="last").drop_duplicates(subset=["name_key","position"], keep="first")
     return out
 
-# =====================================================
-# Sidebar Controls
-# =====================================================
-with st.sidebar:
-    st.header("Inputs")
-    current_year = datetime.now().year
-    season = st.number_input("Season", min_value=2018, max_value=current_year+1, value=current_year, step=1, key="season_in")
-    scoring_type = st.selectbox(
-        "Scoring Type (dataset)",
-        ["redraft_ppr","redraft_half_ppr","redraft_standard","dynasty_ppr"],
-        index=0, key="score_type"
+def parse_expert_csv(file) -> pd.DataFrame:
+    """Return normalized expert ranks: player_name, ecr, position (optional), team (optional)"""
+    try:
+        file.seek(0)
+        try:
+            df = pd.read_csv(file)
+        except Exception:
+            file.seek(0)
+            df = pd.read_csv(file, engine="python", sep=None, on_bad_lines="skip")
+    except Exception as e:
+        st.error(f"Failed to read Expert CSV: {e}")
+        return pd.DataFrame(columns=["player_name","ecr","position","team","name_key"])
+
+    if df.empty:
+        return pd.DataFrame(columns=["player_name","ecr","position","team","name_key"])
+
+    df.columns = df.columns.str.strip().str.lower().str.replace(r"\s+","_", regex=True)
+
+    name_col = find_col(df.columns.tolist(), ["player_name","name","player","full_name"])
+    rank_col = find_col(df.columns.tolist(), ["ecr","rank","overall","overall_rank","consensus_rank"])
+    pos_col  = find_col(df.columns.tolist(), ["position","pos"])
+    team_col = find_col(df.columns.tolist(), ["team","nfl_team"])
+
+    if not name_col or not rank_col:
+        st.warning("Expert CSV must include a player name and rank column (e.g., Name + Rank/ECR).")
+        return pd.DataFrame(columns=["player_name","ecr","position","team","name_key"])
+
+    out = pd.DataFrame()
+    out["player_name"] = df[name_col].astype(str)
+    out["ecr"] = pd.to_numeric(df[rank_col], errors="coerce")
+    out["position"] = df[pos_col] if pos_col else None
+    out["team"] = df[team_col] if team_col else None
+    out["name_key"] = out["player_name"].map(norm_name)
+    # Drop rows without rank
+    out = out.dropna(subset=["ecr"])
+    return out
+
+# ===============================
+# Sidebar: Uploads and Settings
+# ===============================
+st.sidebar.header("📥 Upload Sleeper ADP CSVs")
+adp_files = st.sidebar.file_uploader(
+    "Upload one or multiple ADP CSVs (PPR, Half-PPR, Standard, Dynasty, 2QB, etc.)",
+    type=["csv"],
+    accept_multiple_files=True,
+    key="adp_uploader"
+)
+st.sidebar.caption("Tip: The app will infer the dataset type from filenames (e.g., 'ppr', 'half_ppr', '2qb', 'dynasty').")
+
+st.sidebar.header("📥 Upload Expert Rankings CSV")
+expert_file = st.sidebar.file_uploader(
+    "Upload a CSV with Name and Rank/ECR columns",
+    type=["csv"],
+    accept_multiple_files=False,
+    key="expert_uploader"
+)
+
+st.sidebar.header("⚙️ Dataset Choice")
+st.sidebar.caption("If you upload multiple ADP files, pick which dataset to use for your guide.")
+selected_dataset = st.sidebar.text_input(
+    "Dataset key to use (leave blank to auto-pick first)",
+    value="",
+    key="dataset_key_input"
+)
+
+# Load ADP tables
+adp_tables: Dict[str, pd.DataFrame] = {}
+if adp_files:
+    for f in adp_files:
+        key = infer_dataset_key(f.name)
+        adp_tables[key] = parse_adp_csv(f, f.name)
+    # pick default
+    default_key = selected_dataset or (list(adp_tables.keys())[0] if adp_tables else "")
+else:
+    default_key = ""
+
+# Load expert ranks
+expert_df = parse_expert_csv(expert_file) if expert_file else pd.DataFrame()
+
+# Choose dataset
+if not adp_tables:
+    st.info("Upload at least one ADP CSV to proceed.")
+    st.stop()
+
+use_key = st.selectbox(
+    "Choose ADP dataset",
+    options=list(adp_tables.keys()),
+    index=max(0, list(adp_tables.keys()).index(default_key) if default_key in adp_tables else 0),
+    key="adp_dataset_select"
+)
+adp_df = adp_tables.get(use_key, pd.DataFrame())
+
+if adp_df.empty:
+    st.warning("The chosen ADP dataset is empty after parsing. Please check the file.")
+    st.stop()
+
+# ===============================
+# Merge ADP with Expert Rankings
+# ===============================
+merged = adp_df.copy()
+if not expert_df.empty:
+    merged = merged.merge(
+        expert_df[["name_key","ecr"]],
+        on="name_key",
+        how="left"
     )
-    use_my_drafts = st.toggle("Prefer ADP from my drafts (if available)", value=False, key="prefer_my_drafts")
-    sleeper_user = st.text_input("Sleeper username or user_id", value="", disabled=not use_my_drafts, key="sleeper_user")
-    league_ids_raw = st.text_area("Optional: Specific League IDs (one per line)", value="", disabled=not use_my_drafts, key="league_ids_raw")
-    league_ids = [s.strip() for s in league_ids_raw.splitlines() if s.strip()]
 
-    csv_df = load_csv()
+# Compute value scores
+if "ecr" in merged.columns:
+    # If adp_rank missing, compute
+    if "adp_rank" not in merged.columns or merged["adp_rank"].isna().all():
+        merged["adp_rank"] = merged["adp"].rank(method="dense")
+    merged["value_delta"] = (merged["adp_rank"] - merged["ecr"]).astype("Int64")
+    merged["value_picks"] = (merged["adp"] - merged["ecr"]).astype("Int64")
+else:
+    merged["value_delta"] = pd.Series(dtype="Int64")
+    merged["value_picks"] = pd.Series(dtype="Int64")
 
-    if st.button("🔄 Load Sleeper Data", type="primary", key="btn_load"):
-        with st.spinner("Fetching players and ADP..."):
-            client = Sleeper(season=season, scoring_type=scoring_type)
-            players = client.players()
-            # Decide ADP source
-            adp_df = pd.DataFrame()
-            diag = {}
-            if use_my_drafts:
-                adp_df, diag = client.adp_from_my_drafts(sleeper_user or None, league_ids or None)
-            if adp_df.empty:
-                adp_df = client.adp_aggregate()
-            st.session_state.players = players
-            st.session_state.adp_df = adp_df
-            st.session_state.csv_df = csv_df
-            st.session_state.diag = diag
-        st.success("Loaded.")
+# ===============================
+# Draft Guide (Available Players)
+# ===============================
+st.header("📋 Draft Guide — Available Players")
+colA, colB, colC, colD = st.columns([2,1,1,1])
+with colA:
+    search = st.text_input("Search player", value="", key="search_input")
+with colB:
+    pos_filter = st.multiselect("Positions", options=["QB","RB","WR","TE","K","DEF"], default=["QB","RB","WR","TE"], key="pos_filter")
+with colC:
+    sort_by = st.selectbox("Sort by", options=["value_picks","value_delta","adp","adp_rank","ecr","player_name"], index=0, key="sort_by_select")
+with colD:
+    ascending = st.checkbox("Ascending", value=False, key="sort_ascending")
 
-# =====================================================
-# Main Body
-# =====================================================
-if "players" not in st.session_state:
-    st.info("Load data from the sidebar to begin.")
-    st.stop()
+avail = merged.copy()
+# Remove already drafted players (state-managed below)
+drafted_keys = st.session_state.get("drafted_set", set())
+if drafted_keys:
+    avail = avail[~avail["name_key"].isin(drafted_keys)]
+# Filters
+if pos_filter:
+    avail = avail[avail["position"].isin(pos_filter)]
+if search.strip():
+    s = search.strip().lower()
+    avail = avail[avail["player_name"].str.lower().str.contains(s)]
+# Sort
+if sort_by in avail.columns:
+    avail = avail.sort_values(sort_by, ascending=ascending, na_position="last")
+st.dataframe(avail[["player_name","position","team","adp","adp_rank","ecr","value_picks","value_delta"]].head(200), width="stretch", hide_index=True)
 
-client = Sleeper(season=season, scoring_type=scoring_type)
-players = st.session_state.get("players", {})
-adp_df = st.session_state.get("adp_df", pd.DataFrame())
-csv_df = st.session_state.get("csv_df", None)
+# ===============================
+# Live Draft Board
+# ===============================
+st.header("🧑‍💻 Live Draft Board (Manual Entry)")
+with st.expander("Board Settings", expanded=True):
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        teams = st.number_input("Number of teams", min_value=4, max_value=16, value=12, step=1, key="teams_num")
+    with col2:
+        rounds = st.number_input("Rounds", min_value=1, max_value=30, value=15, step=1, key="rounds_num")
+    with col3:
+        draft_type = st.selectbox("Draft type", options=["snake","linear"], index=0, key="draft_type_select")
+    with col4:
+        my_slot = st.number_input("My draft slot", min_value=1, max_value=int(teams), value=1, step=1, key="my_slot_num")
 
-st.subheader("Build Board")
-include_positions = st.multiselect("Filter positions", ["QB","RB","WR","TE","K","DEF"], default=["QB","RB","WR","TE"], key="pos_filter")
+    if st.button("♻️ Reset Draft", key="reset_board_btn"):
+        st.session_state.drafted_set = set()
+        st.session_state.picks = []
 
-if st.button("⚙️ Build/Refresh Board", key="btn_build"):
-    with st.spinner("Computing value board..."):
-        table = build_value_board(players, adp_df, csv_df, include_positions if include_positions else None)
-        st.session_state.board = table
-    st.success("Board ready.")
+# Initialize state
+if "picks" not in st.session_state:
+    st.session_state.picks = []
+if "drafted_set" not in st.session_state:
+    st.session_state.drafted_set = set()
 
-board = st.session_state.get("board")
-if board is None or board.empty:
-    st.info("No board yet. Click Build/Refresh Board.")
-    st.stop()
+# Compute pick order for current settings
+def team_for_pick(pick_no: int) -> int:
+    """Return team slot (1..teams) on the clock for overall pick_no (1-indexed)."""
+    rnd = (pick_no - 1) // teams + 1
+    idx_in_round = (pick_no - 1) % teams + 1
+    if draft_type == "snake" and rnd % 2 == 0:
+        # reverse
+        slot = teams - idx_in_round + 1
+    else:
+        slot = idx_in_round
+    return slot
 
-# KPIs
-c1,c2,c3,c4 = st.columns(4)
-with c1: st.metric("Players", f"{len(players):,}")
-with c2: st.metric("ADP rows", f"{len(adp_df):,}")
-with c3: st.metric("Missing ADP", f"{int(board['adp'].isna().sum()) if 'adp' in board.columns else 0:,}")
-with c4: st.metric("CSV matches", f"{int(board['ecr'].notna().sum()) if 'ecr' in board.columns else 0:,}")
+def pick_index(round_num: int, slot_in_round: int) -> int:
+    """Overall pick number (1-indexed) given round and slot (1..teams)."""
+    if draft_type == "snake" and round_num % 2 == 0:
+        slot = teams - slot_in_round + 1
+    else:
+        slot = slot_in_round
+    return (round_num - 1) * teams + slot
 
-st.subheader("Top Values (higher = better)")
-st.dataframe(board.head(50))
+# Current on-the-clock info
+next_pick_no = len(st.session_state.picks) + 1
+current_round = (next_pick_no - 1) // teams + 1
+current_slot = team_for_pick(next_pick_no)
+is_me = (current_slot == my_slot)
 
-st.subheader("Most Overvalued (lower = worse)")
-if "value_diff" in board.columns:
-    st.dataframe(board.sort_values("value_diff", ascending=True).head(50))
+info_cols = st.columns(4)
+with info_cols[0]:
+    st.metric("Next Pick #", next_pick_no)
+with info_cols[1]:
+    st.metric("Round", current_round)
+with info_cols[2]:
+    st.metric("Team on Clock", current_slot)
+with info_cols[3]:
+    st.metric("Is this me?", "✅" if is_me else "—")
 
-with st.expander("Diagnostics"):
-    st.write(st.session_state.get("diag", {}))
-    st.caption("If ADP rows = 0, try a different 'Scoring Type (dataset)' or disable 'Prefer ADP from my drafts'. Some seasons/types have sparse data.")
+# Draft input
+st.subheader("Enter Pick")
+colp1, colp2, colp3, colp4 = st.columns([2,1,1,1])
+with colp1:
+    # Select from remaining players
+    # Give a shorter list focusing on value by default
+    pick_pool = avail.copy().sort_values(["value_picks","adp"], ascending=[False, True], na_position="last")
+    pick_names = pick_pool["player_name"].tolist()
+    chosen_player = st.selectbox("Select player", options=[""] + pick_names[:500], index=0, key="player_pick_select")
+with colp2:
+    slot_override = st.number_input("Team slot (optional)", min_value=1, max_value=int(teams), value=int(current_slot), step=1, key="slot_override_num")
+with colp3:
+    round_override = st.number_input("Round (optional)", min_value=1, max_value=int(rounds), value=int(current_round), step=1, key="round_override_num")
+with colp4:
+    add_now = st.button("➕ Add Pick", type="primary", key="add_pick_btn")
 
-# Download
+if add_now and chosen_player:
+    nk = norm_name(chosen_player)
+    if nk in st.session_state.drafted_set:
+        st.warning("That player is already drafted.")
+    else:
+        overall_pick = pick_index(round_override, slot_override)
+        st.session_state.picks.append({
+            "overall": overall_pick,
+            "round": int(round_override),
+            "slot": int(slot_override),
+            "team": int(slot_override),
+            "player_name": chosen_player
+        })
+        st.session_state.drafted_set.add(nk)
+        st.success(f"Added pick {overall_pick}: {chosen_player} (Team {slot_override}, Rd {round_override})")
+
+# Undo last pick
+if st.button("↩️ Undo Last Pick", key="undo_pick_btn"):
+    if st.session_state.picks:
+        last = st.session_state.picks.pop()
+        st.session_state.drafted_set.discard(norm_name(last["player_name"]))
+        st.info(f"Removed last pick: {last['player_name']}")
+    else:
+        st.info("No picks to undo.")
+
+# Render draft board grid
+st.subheader("Draft Board")
+# Build empty grid
+grid = pd.DataFrame(index=[f"Rd {r}" for r in range(1, rounds+1)], columns=[f"Team {t}" for t in range(1, teams+1)])
+for p in st.session_state.picks:
+    label = f"{p['player_name']}"
+    grid.loc[f"Rd {p['round']}", f"Team {p['team']}"] = label
+
+st.dataframe(grid, width="stretch", height=min(800, 40 + 35 * int(rounds)))
+
+# My team
+st.subheader("My Team (Team %d)" % my_slot)
+my_picks = [p for p in st.session_state.picks if p["team"] == int(my_slot)]
+if my_picks:
+    my_df = pd.DataFrame(my_picks).sort_values("overall")
+    st.dataframe(my_df[["overall","round","player_name"]], width="stretch", hide_index=True)
+else:
+    st.caption("No picks yet for your team.")
+
+# Export / Save
 @st.cache_data(show_spinner=False)
 def _to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
-st.download_button(
-    "⬇️ Download Board (CSV)",
-    data=_to_csv_bytes(board),
-    file_name=f"value_board_{season}.csv",
-    mime="text/csv",
-    key="btn_download"
-)
+if st.session_state.picks:
+    export = pd.DataFrame(st.session_state.picks).sort_values("overall")
+    st.download_button(
+        "⬇️ Download Draft Picks CSV",
+        data=_to_csv_bytes(export),
+        file_name=f"draft_board_{use_key}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        key="dl_picks_btn"
+    )
