@@ -1,430 +1,558 @@
-# streamlit run app.py
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
 import re
+from typing import List, Dict, Optional, Tuple
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import streamlit as st
 
-# ===============================
-# Page config
-# ===============================
-st.set_page_config(page_title="Draft Guide (CSV Only)", page_icon="🏈", layout="wide")
-st.title("🏈 Draft Guide — CSV-Only (Sleeper ADP + Expert Ranks)")
+# =========================
+# Page / App configuration
+# =========================
+st.set_page_config(
+    page_title="Fantasy Draft Guide + Live Board",
+    page_icon="🏈",
+    layout="wide",
+)
 
-# ===============================
-# Utilities
-# ===============================
-def norm_name(name: str) -> str:
-    if not isinstance(name, str):
+# -------------------------
+# Helpers: robust utilities
+# -------------------------
+def _lower_alnum(s: str) -> str:
+    if pd.isna(s):
         return ""
-    s = name.strip()
-    # "Last, First" -> "First Last"
-    if "," in s:
-        parts = [p.strip() for p in s.split(",", 1)]
-        if len(parts) == 2:
-            s = f"{parts[1]} {parts[0]}"
-    s = s.replace(".", " ")
-    s = re.sub(r"\s+", " ", s)
-    return s.lower().strip()
+    s = str(s)
+    # remove common suffixes and punctuation/spaces for matching
+    s = re.sub(r"\b(jr|sr|ii|iii|iv)\b\.?", "", s, flags=re.I)
+    s = re.sub(r"[^a-z0-9]", "", s.lower())
+    return s
 
-def coalesce(*vals):
-    for v in vals:
-        if v is not None and v != "" and not (isinstance(v, float) and np.isnan(v)):
-            return v
-    return None
 
-def find_col(cols: List[str], candidates: List[str]) -> Optional[str]:
-    lower = {c.lower(): c for c in cols}
+def autodetect(colnames: List[str], candidates: List[str]) -> Optional[str]:
+    """Return the first column from colnames that fuzzy-matches any candidate (case-insensitive)."""
+    lower = {c.lower(): c for c in colnames}
     for cand in candidates:
         if cand.lower() in lower:
             return lower[cand.lower()]
-    # contains fallback
-    for c in cols:
+    # fuzzy contains
+    for c in colnames:
         for cand in candidates:
             if cand.lower() in c.lower():
                 return c
     return None
 
-def infer_dataset_key(filename: str) -> str:
-    f = filename.lower()
-    key = []
-    if "dynasty" in f:
-        key.append("dynasty")
-    if "2qb" in f or "superflex" in f or "sf" in f:
-        key.append("2qb")
-    if "half" in f or "half_ppr" in f:
-        key.append("half_ppr")
-    elif "ppr" in f:
-        key.append("ppr")
-    elif "std" in f or "standard" in f:
-        key.append("std")
-    if "all" in f and "league" in f:
-        key.append("all_leagues")
-    if "complete" in f:
-        key.append("complete")
-    if not key:
-        key.append("unknown")
-    return "-".join(key)
 
-# ===============================
-# CSV Loaders (ADP and Experts)
-# ===============================
-def parse_adp_csv(file, filename: str) -> pd.DataFrame:
-    """Return normalized ADP table: player_name, position, team, adp, adp_rank, source"""
+def safe_int(x) -> Optional[int]:
     try:
-        file.seek(0)
-        try:
-            df = pd.read_csv(file)
-        except Exception:
-            file.seek(0)
-            df = pd.read_csv(file, engine="python", sep=None, on_bad_lines="skip")
-    except Exception as e:
-        st.error(f"Failed to read ADP CSV {filename}: {e}")
-        return pd.DataFrame(columns=["player_name","position","team","adp","adp_rank","source"])
+        if pd.isna(x):
+            return None
+        return int(float(x))
+    except Exception:
+        return None
 
-    if df.empty:
-        return pd.DataFrame(columns=["player_name","position","team","adp","adp_rank","source"])
 
-    # Normalize headers
-    df.columns = df.columns.str.strip().str.lower().str.replace(r"\s+","_", regex=True)
-
-    name_col = find_col(df.columns.tolist(), ["player_name","name","player","full_name"])
-    pos_col  = find_col(df.columns.tolist(), ["position","pos"])
-    team_col = find_col(df.columns.tolist(), ["team","nfl_team"])
-    adp_col  = find_col(df.columns.tolist(), ["adp","average_draft_position","adp_overall"])
-    rank_col = find_col(df.columns.tolist(), ["rank","adp_rank","overall_rank"])
-    count_col = find_col(df.columns.tolist(), ["count","samples"])
-
-    if not name_col:
-        # Some Sleeper CSVs store "player_id" and "name" separately; try to reconstruct name
-        name_col = "name" if "name" in df.columns else None
-
-    # Build normalized frame
-    out = pd.DataFrame()
-    if name_col:
-        out["player_name"] = df[name_col].astype(str)
-    else:
-        # Can't proceed without names
-        st.warning(f"{filename}: could not find a name column; skipping.")
-        return pd.DataFrame(columns=["player_name","position","team","adp","adp_rank","source"])
-
-    if pos_col in df.columns:
-        out["position"] = df[pos_col]
-    else:
-        out["position"] = None
-
-    if team_col in df.columns:
-        out["team"] = df[team_col]
-    else:
-        out["team"] = None
-
-    if adp_col in df.columns:
-        out["adp"] = pd.to_numeric(df[adp_col], errors="coerce")
-    else:
-        out["adp"] = np.nan
-
-    if rank_col in df.columns:
-        out["adp_rank"] = pd.to_numeric(df[rank_col], errors="coerce")
-    else:
-        # derive rank from adp
-        out["adp_rank"] = out["adp"].rank(method="dense")
-
-    if count_col in df.columns:
-        out["samples"] = pd.to_numeric(df[count_col], errors="coerce")
-    # Add source key from filename
-    out["source"] = infer_dataset_key(filename)
-    # Normalize names and positions
-    out["name_key"] = out["player_name"].map(norm_name)
-    if "position" in out.columns:
-        out["position"] = out["position"].astype(str).str.upper()
-    # Drop duplicate name/position combos; keep best (lowest adp)
-    out = out.sort_values(["name_key","adp"], na_position="last").drop_duplicates(subset=["name_key","position"], keep="first")
-    return out
-
-def parse_expert_csv(file) -> pd.DataFrame:
-    """Return normalized expert ranks: player_name, ecr, position (optional), team (optional)"""
+def safe_float(x) -> Optional[float]:
     try:
-        file.seek(0)
+        if pd.isna(x):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def to_round_pick(adp: float, league_size: int) -> Tuple[int, int]:
+    """Given ADP and league size, return (round, pick_in_round) 1-indexed."""
+    if adp is None or np.isnan(adp) or league_size <= 0:
+        return (None, None)
+    pick_num = int(round(adp))
+    rnd = (pick_num - 1) // league_size + 1
+    pick_in = (pick_num - 1) % league_size + 1
+    return (rnd, pick_in)
+
+
+# -----------------------------------
+# Sleeper ADP CSV normalization layer
+# -----------------------------------
+def normalize_adp_df(raw: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    df = raw.copy()
+
+    # Try to find usable columns
+    name_col = autodetect(df.columns.tolist(), ["player_name", "name", "player", "full_name"])
+    adp_col = autodetect(df.columns.tolist(), ["adp", "avg_pick", "average_pick", "adp_value", "overall_adp"])
+    team_col = autodetect(df.columns.tolist(), ["team", "team_code", "nfl_team"])
+    pos_col = autodetect(df.columns.tolist(), ["position", "pos"])
+    rank_col = autodetect(df.columns.tolist(), ["rank", "overall_rank", "overall"])
+
+    # Basic rename to standard schema
+    rename_map = {}
+    if name_col: rename_map[name_col] = "name"
+    if adp_col: rename_map[adp_col] = "adp"
+    if team_col: rename_map[team_col] = "team"
+    if pos_col: rename_map[pos_col] = "pos"
+    if rank_col: rename_map[rank_col] = "adp_rank_raw"
+
+    df = df.rename(columns=rename_map)
+
+    # Drop rows without names
+    if "name" not in df.columns:
+        # Create an empty standard table if unusable
+        return pd.DataFrame(columns=["name", "adp", "team", "pos", "adp_rank", "adp_source", "match_key"])
+
+    # Coerce numeric
+    if "adp" in df.columns:
+        df["adp"] = df["adp"].apply(safe_float)
+    else:
+        df["adp"] = np.nan
+
+    # If rank missing, derive from adp
+    if "adp_rank_raw" not in df.columns or df["adp_rank_raw"].isna().all():
+        # If ADP available, derive rank by sorting; else leave NaN
+        if df["adp"].notna().any():
+            df = df.sort_values(by=["adp"], ascending=True, na_position="last")
+            df["adp_rank_raw"] = range(1, len(df) + 1)
+        else:
+            df["adp_rank_raw"] = np.nan
+
+    df["team"] = df.get("team", "").fillna("").astype(str)
+    df["pos"] = df.get("pos", "").fillna("").astype(str)
+
+    # Standardized fields
+    df["adp_rank"] = df["adp_rank_raw"].apply(safe_int)
+    df["adp_source"] = source_name
+    df["match_key"] = df["name"].map(_lower_alnum)
+
+    keep = ["name", "team", "pos", "adp", "adp_rank", "adp_source", "match_key"]
+    return df[keep]
+
+
+def load_adp_uploads(files: List) -> pd.DataFrame:
+    frames = []
+    for f in files:
         try:
-            df = pd.read_csv(file)
+            df = pd.read_csv(f)
+        except UnicodeDecodeError:
+            f.seek(0)
+            df = pd.read_csv(f, encoding="latin-1")
         except Exception:
-            file.seek(0)
-            df = pd.read_csv(file, engine="python", sep=None, on_bad_lines="skip")
-    except Exception as e:
-        st.error(f"Failed to read Expert CSV: {e}")
-        return pd.DataFrame(columns=["player_name","ecr","position","team","name_key"])
+            f.seek(0)
+            df = pd.read_csv(f, sep=";")
+        frames.append(normalize_adp_df(df, source_name=getattr(f, "name", "uploaded_adp")))
+    if not frames:
+        return pd.DataFrame(columns=["name", "team", "pos", "adp", "adp_rank", "adp_source", "match_key"])
+    out = pd.concat(frames, ignore_index=True)
+    # If multiple sources, keep best info per player by lowest ADP rank (market strongest signal)
+    out = out.sort_values(by=["match_key", "adp_rank"], na_position="last").drop_duplicates("match_key", keep="first")
+    return out.reset_index(drop=True)
 
-    if df.empty:
-        return pd.DataFrame(columns=["player_name","ecr","position","team","name_key"])
 
-    df.columns = df.columns.str.strip().str.lower().str.replace(r"\s+","_", regex=True)
+# -------------------------------------
+# Expert Rankings CSV normalization layer
+# -------------------------------------
+def normalize_rankings_df(
+    raw: pd.DataFrame,
+    player_col: Optional[str] = None,
+    rank_col: Optional[str] = None,
+    pos_col: Optional[str] = None,
+    team_col: Optional[str] = None,
+) -> pd.DataFrame:
+    df = raw.copy()
 
-    name_col = find_col(df.columns.tolist(), ["player_name","name","player","full_name"])
-    rank_col = find_col(df.columns.tolist(), ["ecr","rank","overall","overall_rank","consensus_rank"])
-    pos_col  = find_col(df.columns.tolist(), ["position","pos"])
-    team_col = find_col(df.columns.tolist(), ["team","nfl_team"])
+    # Auto-detect if not provided
+    detected_player = player_col or autodetect(df.columns.tolist(), ["player", "name", "player_name", "full_name"])
+    detected_rank = rank_col or autodetect(df.columns.tolist(), ["rank", "overall_rank", "expert_rank"])
+    detected_pos = pos_col or autodetect(df.columns.tolist(), ["position", "pos"])
+    detected_team = team_col or autodetect(df.columns.tolist(), ["team", "team_code", "nfl_team"])
 
-    if not name_col or not rank_col:
-        st.warning("Expert CSV must include a player name and rank column (e.g., Name + Rank/ECR).")
-        return pd.DataFrame(columns=["player_name","ecr","position","team","name_key"])
+    if detected_player is None or detected_rank is None:
+        # Create an empty frame flagged for mapping later
+        return pd.DataFrame(columns=["name", "expert_rank", "pos", "team", "match_key"])
 
-    out = pd.DataFrame()
-    out["player_name"] = df[name_col].astype(str)
-    out["ecr"] = pd.to_numeric(df[rank_col], errors="coerce")
-    out["position"] = df[pos_col] if pos_col else None
-    out["team"] = df[team_col] if team_col else None
-    out["name_key"] = out["player_name"].map(norm_name)
-    # Drop rows without rank
-    out = out.dropna(subset=["ecr"])
-    return out
+    rename_map = {detected_player: "name", detected_rank: "expert_rank"}
+    if detected_pos: rename_map[detected_pos] = "pos"
+    if detected_team: rename_map[detected_team] = "team"
 
-# ===============================
-# Sidebar: Uploads and Settings
-# ===============================
-st.sidebar.header("📥 Upload Sleeper ADP CSVs")
-adp_files = st.sidebar.file_uploader(
-    "Upload one or multiple ADP CSVs (PPR, Half-PPR, Standard, Dynasty, 2QB, etc.)",
-    type=["csv"],
-    accept_multiple_files=True,
-    key="adp_uploader"
-)
-st.sidebar.caption("Tip: The app will infer the dataset type from filenames (e.g., 'ppr', 'half_ppr', '2qb', 'dynasty').")
+    df = df.rename(columns=rename_map)
 
-st.sidebar.header("📥 Upload Expert Rankings CSV")
-expert_file = st.sidebar.file_uploader(
-    "Upload a CSV with Name and Rank/ECR columns",
-    type=["csv"],
-    accept_multiple_files=False,
-    key="expert_uploader"
-)
+    # Coerce rank
+    df["expert_rank"] = df["expert_rank"].apply(safe_int)
+    df["pos"] = df.get("pos", "").fillna("").astype(str)
+    df["team"] = df.get("team", "").fillna("").astype(str)
 
-st.sidebar.header("⚙️ Dataset Choice")
-st.sidebar.caption("If you upload multiple ADP files, pick which dataset to use for your guide.")
-selected_dataset = st.sidebar.text_input(
-    "Dataset key to use (leave blank to auto-pick first)",
-    value="",
-    key="dataset_key_input"
-)
+    # Match key
+    df["match_key"] = df["name"].map(_lower_alnum)
+    keep = ["name", "expert_rank", "pos", "team", "match_key"]
+    df = df[keep].dropna(subset=["name", "expert_rank"])
+    return df.reset_index(drop=True)
 
-# Load ADP tables
-adp_tables: Dict[str, pd.DataFrame] = {}
-if adp_files:
-    for f in adp_files:
-        key = infer_dataset_key(f.name)
-        adp_tables[key] = parse_adp_csv(f, f.name)
-    # pick default
-    default_key = selected_dataset or (list(adp_tables.keys())[0] if adp_tables else "")
-else:
-    default_key = ""
 
-# Load expert ranks
-expert_df = parse_expert_csv(expert_file) if expert_file else pd.DataFrame()
+# -------------------------
+# Value calculation & views
+# -------------------------
+def compute_value_table(adp_df: pd.DataFrame, ranks_df: pd.DataFrame, league_size: int) -> pd.DataFrame:
+    if adp_df.empty or ranks_df.empty:
+        return pd.DataFrame(columns=[
+            "name", "team", "pos", "adp", "adp_rank", "expert_rank",
+            "value_vs_adp", "value_color", "adp_rnd", "adp_pick_in_rnd"
+        ])
 
-# Choose dataset
-if not adp_tables:
-    st.info("Upload at least one ADP CSV to proceed.")
-    st.stop()
-
-use_key = st.selectbox(
-    "Choose ADP dataset",
-    options=list(adp_tables.keys()),
-    index=max(0, list(adp_tables.keys()).index(default_key) if default_key in adp_tables else 0),
-    key="adp_dataset_select"
-)
-adp_df = adp_tables.get(use_key, pd.DataFrame())
-
-if adp_df.empty:
-    st.warning("The chosen ADP dataset is empty after parsing. Please check the file.")
-    st.stop()
-
-# ===============================
-# Merge ADP with Expert Rankings
-# ===============================
-merged = adp_df.copy()
-if not expert_df.empty:
-    merged = merged.merge(
-        expert_df[["name_key","ecr"]],
-        on="name_key",
-        how="left"
+    merged = pd.merge(
+        adp_df,
+        ranks_df[["match_key", "expert_rank"]],
+        on="match_key",
+        how="inner",
+        validate="one_to_one"
     )
 
-# Compute value scores
-if "ecr" in merged.columns:
-    # If adp_rank missing, compute
-    if "adp_rank" not in merged.columns or merged["adp_rank"].isna().all():
-        merged["adp_rank"] = merged["adp"].rank(method="dense")
-    merged["value_delta"] = (merged["adp_rank"] - merged["ecr"]).astype("Int64")
-    merged["value_picks"] = (merged["adp"] - merged["ecr"]).astype("Int64")
-else:
-    merged["value_delta"] = pd.Series(dtype="Int64")
-    merged["value_picks"] = pd.Series(dtype="Int64")
+    # value (negative is good: expert says earlier than market)
+    merged["value_vs_adp"] = merged["expert_rank"] - merged["adp_rank"]
+    # round/pick from adp
+    rp = merged["adp"].apply(lambda x: to_round_pick(x, league_size))
+    merged["adp_rnd"] = [a if isinstance(a, int) else None for a, _ in rp]
+    merged["adp_pick_in_rnd"] = [b if isinstance(b, int) else None for _, b in rp]
 
-# ===============================
-# Draft Guide (Available Players)
-# ===============================
-st.header("📋 Draft Guide — Available Players")
-colA, colB, colC, colD = st.columns([2,1,1,1])
+    # quick color hint (string tag – you can convert to styling in st.dataframe if desired)
+    def tag(v):
+        if pd.isna(v):
+            return ""
+        if v <= -15:
+            return "💚💚 great"
+        if v <= -7:
+            return "💚 good"
+        if v >= 15:
+            return "💔 avoid"
+        if v >= 7:
+            return "🟧 pricey"
+        return "⚪ neutral"
+
+    merged["value_color"] = merged["value_vs_adp"].map(tag)
+
+    cols = ["name", "team", "pos", "adp", "adp_rank", "expert_rank", "value_vs_adp", "value_color", "adp_rnd", "adp_pick_in_rnd"]
+    merged = merged[cols].sort_values(by=["value_vs_adp", "expert_rank"], ascending=[True, True], na_position="last").reset_index(drop=True)
+    return merged
+
+
+# -------------------------
+# Live draft board utilities
+# -------------------------
+def snake_team_for_pick(pick_number: int, num_teams: int) -> int:
+    """Return team index (1..num_teams) for a given 1-indexed pick number."""
+    if pick_number <= 0 or num_teams <= 0:
+        return 1
+    round_idx = (pick_number - 1) // num_teams  # 0-based round
+    pos_in_round = (pick_number - 1) % num_teams  # 0..num_teams-1
+    if round_idx % 2 == 0:
+        # normal order
+        return pos_in_round + 1
+    else:
+        # reversed order
+        return num_teams - pos_in_round
+
+
+def linear_team_for_pick(pick_number: int, num_teams: int) -> int:
+    pos_in_round = (pick_number - 1) % num_teams
+    return pos_in_round + 1
+
+
+def build_board_df(picks: List[Dict], num_teams: int, num_rounds: int) -> pd.DataFrame:
+    board = pd.DataFrame(index=[f"R{r}" for r in range(1, num_rounds + 1)],
+                         columns=[f"T{t}" for t in range(1, num_teams + 1)])
+    for p in picks:
+        rnd = p["round"]
+        team = p["team"]
+        label = p["label"]
+        if 1 <= rnd <= num_rounds and 1 <= team <= num_teams:
+            board.loc[f"R{rnd}", f"T{team}"] = label
+    return board
+
+
+def next_pick_metadata(picks_count: int, num_teams: int, draft_type: str) -> Tuple[int, int]:
+    pick_no = picks_count + 1
+    rnd = (pick_no - 1) // num_teams + 1
+    if draft_type == "Snake":
+        team = snake_team_for_pick(pick_no, num_teams)
+    else:
+        team = linear_team_for_pick(pick_no, num_teams)
+    return rnd, team
+
+
+# ==============
+# Session memory
+# ==============
+def ensure_state():
+    ss = st.session_state
+    ss.setdefault("adp_df", pd.DataFrame())
+    ss.setdefault("ranks_df", pd.DataFrame())
+    ss.setdefault("values_df", pd.DataFrame())
+    ss.setdefault("draft_picks", [])  # list of dicts: {round, team, name, label, pos, team_code}
+    ss.setdefault("draft_type", "Snake")
+    ss.setdefault("num_teams", 12)
+    ss.setdefault("num_rounds", 16)
+    ss.setdefault("my_slot", 1)
+    ss.setdefault("filters_pos", set(["QB", "RB", "WR", "TE", "DST", "K"]))
+    ss.setdefault("sort_choice", "Best value (expert vs ADP)")
+    ss.setdefault("only_available", True)
+    ss.setdefault("show_position_adp", False)
+    ss.setdefault("player_search", "")
+
+
+ensure_state()
+
+# ===========
+# Side Bar UI
+# ===========
+with st.sidebar:
+    st.header("⚙️ Settings")
+
+    st.selectbox(
+        "Draft Type",
+        ["Snake", "Linear"],
+        index=0 if st.session_state.draft_type == "Snake" else 1,
+        key="draft_type_select",
+    )
+    st.session_state.draft_type = st.session_state.draft_type_select
+
+    st.number_input("Number of Teams", 2, 20, value=st.session_state.num_teams, key="num_teams_input")
+    st.session_state.num_teams = st.session_state.num_teams_input
+
+    st.number_input("Rounds", 1, 30, value=st.session_state.num_rounds, key="num_rounds_input")
+    st.session_state.num_rounds = st.session_state.num_rounds_input
+
+    st.number_input("Your Draft Slot", 1, st.session_state.num_teams, value=st.session_state.my_slot, key="my_slot_input")
+    st.session_state.my_slot = st.session_state.my_slot_input
+
+    st.markdown("---")
+    st.caption("Upload one or more Sleeper ADP CSV files:")
+    adp_files = st.file_uploader(
+        "Sleeper ADP CSVs",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="adp_uploader",
+    )
+
+    st.caption("Upload your expert rankings CSV file(s):")
+    ranks_files = st.file_uploader(
+        "Expert Rankings CSV(s)",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="ranks_uploader",
+    )
+
+    st.markdown("---")
+    if st.button("🔄 Load / Refresh Data", type="primary", key="btn_refresh_data"):
+        with st.spinner("Loading & normalizing ADP..."):
+            adp_df = load_adp_uploads(adp_files or [])
+        with st.spinner("Loading & normalizing Expert Rankings..."):
+            ranks_frames = []
+            for f in (ranks_files or []):
+                try:
+                    raw = pd.read_csv(f)
+                except UnicodeDecodeError:
+                    f.seek(0)
+                    raw = pd.read_csv(f, encoding="latin-1")
+                except Exception:
+                    f.seek(0)
+                    raw = pd.read_csv(f, sep=";")
+
+                ranks_frames.append(normalize_rankings_df(raw))
+            ranks_df = pd.concat(ranks_frames, ignore_index=True) if ranks_frames else pd.DataFrame(
+                columns=["name", "expert_rank", "pos", "team", "match_key"]
+            )
+
+        st.session_state.adp_df = adp_df
+        st.session_state.ranks_df = ranks_df
+
+        with st.spinner("Computing values..."):
+            st.session_state.values_df = compute_value_table(
+                st.session_state.adp_df, st.session_state.ranks_df, st.session_state.num_teams
+            )
+        st.success("Data loaded ✅")
+
+    if st.button("🧹 Reset Draft Board", key="btn_reset_draft"):
+        st.session_state.draft_picks = []
+        st.success("Draft board reset")
+
+# ==================
+# Main Page Sections
+# ==================
+st.title("🏈 Fantasy Draft Guide + Live Draft Board")
+
+# Info about what was loaded
+colA, colB, colC = st.columns([1, 1, 2])
 with colA:
-    search = st.text_input("Search player", value="", key="search_input")
+    st.metric("Players with ADP", f"{len(st.session_state.adp_df):,}")
 with colB:
-    pos_filter = st.multiselect("Positions", options=["QB","RB","WR","TE","K","DEF"], default=["QB","RB","WR","TE"], key="pos_filter")
+    st.metric("Players with Expert Rank", f"{len(st.session_state.ranks_df):,}")
 with colC:
-    sort_by = st.selectbox("Sort by", options=["value_picks","value_delta","adp","adp_rank","ecr","player_name"], index=0, key="sort_by_select")
-with colD:
-    ascending = st.checkbox("Ascending", value=False, key="sort_ascending")
+    st.metric("Matched for Value Calc", f"{len(st.session_state.values_df):,}")
 
-avail = merged.copy()
-# Remove already drafted players (state-managed below)
-drafted_keys = st.session_state.get("drafted_set", set())
-if drafted_keys:
-    avail = avail[~avail["name_key"].isin(drafted_keys)]
-# Filters
-if pos_filter:
-    avail = avail[avail["position"].isin(pos_filter)]
-if search.strip():
-    s = search.strip().lower()
-    avail = avail[avail["player_name"].str.lower().str.contains(s)]
-# Sort
-if sort_by in avail.columns:
-    avail = avail.sort_values(sort_by, ascending=ascending, na_position="last")
-st.dataframe(avail[["player_name","position","team","adp","adp_rank","ecr","value_picks","value_delta"]].head(200), width="stretch", hide_index=True)
+st.markdown("---")
 
-# ===============================
-# Live Draft Board
-# ===============================
-st.header("🧑‍💻 Live Draft Board (Manual Entry)")
-with st.expander("Board Settings", expanded=True):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        teams = st.number_input("Number of teams", min_value=4, max_value=16, value=12, step=1, key="teams_num")
-    with col2:
-        rounds = st.number_input("Rounds", min_value=1, max_value=30, value=15, step=1, key="rounds_num")
-    with col3:
-        draft_type = st.selectbox("Draft type", options=["snake","linear"], index=0, key="draft_type_select")
-    with col4:
-        my_slot = st.number_input("My draft slot", min_value=1, max_value=int(teams), value=1, step=1, key="my_slot_num")
-
-    if st.button("♻️ Reset Draft", key="reset_board_btn"):
-        st.session_state.drafted_set = set()
-        st.session_state.picks = []
-
-# Initialize state
-if "picks" not in st.session_state:
-    st.session_state.picks = []
-if "drafted_set" not in st.session_state:
-    st.session_state.drafted_set = set()
-
-# Compute pick order for current settings
-def team_for_pick(pick_no: int) -> int:
-    """Return team slot (1..teams) on the clock for overall pick_no (1-indexed)."""
-    rnd = (pick_no - 1) // teams + 1
-    idx_in_round = (pick_no - 1) % teams + 1
-    if draft_type == "snake" and rnd % 2 == 0:
-        # reverse
-        slot = teams - idx_in_round + 1
-    else:
-        slot = idx_in_round
-    return slot
-
-def pick_index(round_num: int, slot_in_round: int) -> int:
-    """Overall pick number (1-indexed) given round and slot (1..teams)."""
-    if draft_type == "snake" and round_num % 2 == 0:
-        slot = teams - slot_in_round + 1
-    else:
-        slot = slot_in_round
-    return (round_num - 1) * teams + slot
-
-# Current on-the-clock info
-next_pick_no = len(st.session_state.picks) + 1
-current_round = (next_pick_no - 1) // teams + 1
-current_slot = team_for_pick(next_pick_no)
-is_me = (current_slot == my_slot)
-
-info_cols = st.columns(4)
-with info_cols[0]:
-    st.metric("Next Pick #", next_pick_no)
-with info_cols[1]:
-    st.metric("Round", current_round)
-with info_cols[2]:
-    st.metric("Team on Clock", current_slot)
-with info_cols[3]:
-    st.metric("Is this me?", "✅" if is_me else "—")
-
-# Draft input
-st.subheader("Enter Pick")
-colp1, colp2, colp3, colp4 = st.columns([2,1,1,1])
-with colp1:
-    # Select from remaining players
-    # Give a shorter list focusing on value by default
-    pick_pool = avail.copy().sort_values(["value_picks","adp"], ascending=[False, True], na_position="last")
-    pick_names = pick_pool["player_name"].tolist()
-    chosen_player = st.selectbox("Select player", options=[""] + pick_names[:500], index=0, key="player_pick_select")
-with colp2:
-    slot_override = st.number_input("Team slot (optional)", min_value=1, max_value=int(teams), value=int(current_slot), step=1, key="slot_override_num")
-with colp3:
-    round_override = st.number_input("Round (optional)", min_value=1, max_value=int(rounds), value=int(current_round), step=1, key="round_override_num")
-with colp4:
-    add_now = st.button("➕ Add Pick", type="primary", key="add_pick_btn")
-
-if add_now and chosen_player:
-    nk = norm_name(chosen_player)
-    if nk in st.session_state.drafted_set:
-        st.warning("That player is already drafted.")
-    else:
-        overall_pick = pick_index(round_override, slot_override)
-        st.session_state.picks.append({
-            "overall": overall_pick,
-            "round": int(round_override),
-            "slot": int(slot_override),
-            "team": int(slot_override),
-            "player_name": chosen_player
-        })
-        st.session_state.drafted_set.add(nk)
-        st.success(f"Added pick {overall_pick}: {chosen_player} (Team {slot_override}, Rd {round_override})")
-
-# Undo last pick
-if st.button("↩️ Undo Last Pick", key="undo_pick_btn"):
-    if st.session_state.picks:
-        last = st.session_state.picks.pop()
-        st.session_state.drafted_set.discard(norm_name(last["player_name"]))
-        st.info(f"Removed last pick: {last['player_name']}")
-    else:
-        st.info("No picks to undo.")
-
-# Render draft board grid
-st.subheader("Draft Board")
-# Build empty grid
-grid = pd.DataFrame(index=[f"Rd {r}" for r in range(1, rounds+1)], columns=[f"Team {t}" for t in range(1, teams+1)])
-for p in st.session_state.picks:
-    label = f"{p['player_name']}"
-    grid.loc[f"Rd {p['round']}", f"Team {p['team']}"] = label
-
-st.dataframe(grid, width="stretch", height=min(800, 40 + 35 * int(rounds)))
-
-# My team
-st.subheader("My Team (Team %d)" % my_slot)
-my_picks = [p for p in st.session_state.picks if p["team"] == int(my_slot)]
-if my_picks:
-    my_df = pd.DataFrame(my_picks).sort_values("overall")
-    st.dataframe(my_df[["overall","round","player_name"]], width="stretch", hide_index=True)
-else:
-    st.caption("No picks yet for your team.")
-
-# Export / Save
-@st.cache_data(show_spinner=False)
-def _to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
-
-if st.session_state.picks:
-    export = pd.DataFrame(st.session_state.picks).sort_values("overall")
-    st.download_button(
-        "⬇️ Download Draft Picks CSV",
-        data=_to_csv_bytes(export),
-        file_name=f"draft_board_{use_key}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        key="dl_picks_btn"
+# ======================
+# Value Finder / Filters
+# ======================
+st.subheader("📊 Value Finder (Expert Rank vs Market ADP)")
+vf1, vf2, vf3, vf4 = st.columns([1.2, 1, 1, 1.2])
+with vf1:
+    st.selectbox(
+        "Sort players by",
+        ["Best value (expert vs ADP)", "Expert Rank", "Market ADP"],
+        key="sort_choice",
     )
+with vf2:
+    st.checkbox("Only available (not drafted)", value=st.session_state.only_available, key="only_available")
+with vf3:
+    st.checkbox("Show Position ADP (by group)", value=st.session_state.show_position_adp, key="show_position_adp")
+with vf4:
+    st.text_input("Search player name", value=st.session_state.player_search, key="player_search")
+
+pos_filters = st.multiselect(
+    "Filter positions",
+    ["QB", "RB", "WR", "TE", "DST", "K"],
+    default=list(st.session_state.filters_pos),
+    key="pos_filters",
+)
+
+st.session_state.filters_pos = set(pos_filters)
+
+# Build "available" set
+drafted_names = set(p["name"] for p in st.session_state.draft_picks)
+
+df_values = st.session_state.values_df.copy()
+
+# Position filter (map some DST aliases)
+def _normalize_pos(p):
+    p = (p or "").upper()
+    if p in ("D/ST", "DST", "DEF", "D"):
+        return "DST"
+    return p
+
+df_values["pos"] = df_values["pos"].map(_normalize_pos)
+df_values = df_values[df_values["pos"].isin(st.session_state.filters_pos)]
+
+if st.session_state.player_search.strip():
+    key = _lower_alnum(st.session_state.player_search.strip())
+    df_values = df_values[df_values["name"].map(_lower_alnum).str.contains(key)]
+
+if st.session_state.only_available:
+    df_values = df_values[~df_values["name"].isin(drafted_names)]
+
+# Optional: compute position ADP (rank inside position) for current view
+if st.session_state.show_position_adp:
+    df_values["pos_adp_rank"] = (
+        df_values.sort_values(["pos", "adp_rank"], ascending=[True, True])
+        .groupby("pos")
+        .cumcount() + 1
+    )
+
+# Sorting
+if st.session_state.sort_choice == "Expert Rank":
+    df_values = df_values.sort_values(by=["expert_rank", "adp_rank"], ascending=[True, True])
+elif st.session_state.sort_choice == "Market ADP":
+    df_values = df_values.sort_values(by=["adp_rank", "expert_rank"], ascending=[True, True])
+else:
+    df_values = df_values.sort_values(by=["value_vs_adp", "expert_rank"], ascending=[True, True])
+
+# Show the table
+st.dataframe(
+    df_values.head(300),
+    use_container_width=None,  # intentionally not used; replaced by width below
+    width="stretch",
+    height=450,
+)
+
+# ===============
+# Live Draft Board
+# ===============
+st.subheader("🧩 Live Draft Board")
+
+# Next pick info
+picks_count = len(st.session_state.draft_picks)
+np_round, np_team = next_pick_metadata(picks_count, st.session_state.num_teams, st.session_state.draft_type)
+st.caption(f"Next pick ➜ Round {np_round}, Team {np_team}")
+
+left, right = st.columns([1.6, 1.4])
+
+with left:
+    st.markdown("**Add a Pick**")
+
+    # pick a player from available list
+    available_names = df_values["name"].tolist()
+    prefill = available_names[0] if available_names else ""
+    picked_player = st.selectbox("Choose player", available_names, index=0 if available_names else None, key="sel_player")
+
+    # allow override: which team is picking (default: computed)
+    team_choice = st.number_input(
+        "Team (1..N)",
+        min_value=1, max_value=st.session_state.num_teams, value=np_team or 1,
+        key="num_pick_team"
+    )
+    round_choice = st.number_input(
+        "Round",
+        min_value=1, max_value=st.session_state.num_rounds, value=np_round or 1,
+        key="num_pick_round"
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("➕ Add Pick", type="primary", key="btn_add_pick") and picked_player:
+            # Look up pos/team for label
+            row = st.session_state.values_df.loc[st.session_state.values_df["name"] == picked_player]
+            pos = row["pos"].iloc[0] if not row.empty else ""
+            tcode = row["team"].iloc[0] if not row.empty else ""
+
+            st.session_state.draft_picks.append({
+                "round": int(round_choice),
+                "team": int(team_choice),
+                "name": picked_player,
+                "label": f"{picked_player} ({pos}-{tcode})",
+                "pos": pos,
+                "team_code": tcode
+            })
+            st.success(f"Added: {picked_player} ➜ R{round_choice} T{team_choice}")
+
+    with c2:
+        if st.button("↩️ Undo Last", key="btn_undo_last"):
+            if st.session_state.draft_picks:
+                last = st.session_state.draft_picks.pop()
+                st.info(f"Removed: {last['label']}")
+            else:
+                st.warning("No picks to undo")
+
+    with c3:
+        if st.button("💾 Export Board CSV", key="btn_export_board"):
+            board = build_board_df(st.session_state.draft_picks, st.session_state.num_teams, st.session_state.num_rounds)
+            csv = board.to_csv().encode("utf-8")
+            st.download_button("Download Board.csv", data=csv, file_name="draft_board.csv", mime="text/csv",
+                               key="btn_dl_board")
+
+with right:
+    board = build_board_df(st.session_state.draft_picks, st.session_state.num_teams, st.session_state.num_rounds)
+    st.markdown("**Draft Board**")
+    st.dataframe(board, width="stretch", height=550)
+
+st.markdown("---")
+
+# ====================
+# Value by Position(s)
+# ====================
+st.subheader("🔍 Positional Views")
+pos_group = st.radio("Choose a position", ["All", "QB", "RB", "WR", "TE", "DST", "K"], horizontal=True, key="radio_pos")
+pos_df = st.session_state.values_df.copy()
+pos_df["pos"] = pos_df["pos"].map(_normalize_pos)
+
+if pos_group != "All":
+    pos_df = pos_df[pos_df["pos"] == pos_group]
+
+if st.session_state.only_available:
+    drafted_names = set(p["name"] for p in st.session_state.draft_picks)
+    pos_df = pos_df[~pos_df["name"].isin(drafted_names)]
+
+st.dataframe(
+    pos_df.sort_values(by=["value_vs_adp", "expert_rank"], ascending=[True, True]).head(200),
+    width="stretch",
+    height=400,
+)
+
+# =====
+# Notes
+# =====
+st.caption("Tip: Value = Expert Rank − ADP Rank (negative is good value; positive is overpriced).")
